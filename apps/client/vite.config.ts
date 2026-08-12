@@ -11,6 +11,6 @@ export default defineConfig({
   clearScreen: false,
   build: {
     target: "es2021",
-    sourcemap: true,
+    sourcemap: false,
   },
 });

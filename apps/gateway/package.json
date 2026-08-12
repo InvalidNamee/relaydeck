@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@relaydeck/protocol": "0.1.0",
-    "ws": "8.18.3"
+    "ws": "8.21.3"
   },
   "scripts": {
     "build": "npm run build -w @relaydeck/protocol && node --check src/server.mjs && node --check src/config.mjs && node --check src/cdp.mjs && node --check src/chrome.mjs && node --check src/state-store.mjs",

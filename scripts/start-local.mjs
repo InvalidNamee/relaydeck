@@ -3,7 +3,6 @@ import { spawn } from "node:child_process";
 
 const token = process.env.GATEWAY_TOKEN || randomBytes(18).toString("base64url");
 const children = [];
-const production = process.argv.includes("--production");
 
 function start(command, args, extraEnv = {}) {
   const child = spawn(command, args, {
@@ -18,20 +17,17 @@ function start(command, args, extraEnv = {}) {
 
 console.log("");
 console.log("Relaydeck 本地控制台");
-console.log(`  UI:      http://${process.env.UI_HOST || "127.0.0.1"}:3000`);
+console.log("  UI:      http://127.0.0.1:1420");
 console.log(
   `  Gateway: ws://${process.env.GATEWAY_HOST || "0.0.0.0"}:${process.env.GATEWAY_PORT || "8788"}`,
 );
 console.log(`  Token:   ${token}`);
 console.log("");
 
-start("npm", ["run", production ? "start:ui" : "dev:ui"]);
+start("npm", ["run", "dev:client"]);
 start(process.execPath, ["apps/gateway/src/server.mjs"], { GATEWAY_TOKEN: token });
-
-if (process.env.AUTO_START_CHROME === "1") {
-  start(process.execPath, ["scripts/start-chrome.mjs"]);
-} else {
-  console.log("另开终端运行 npm run chrome，或设置 AUTO_START_CHROME=1。");
+if (process.env.AUTO_START_CHROME !== "1") {
+  console.log("如需网关自动管理 Chrome，请设置 AUTO_START_CHROME=1。");
 }
 
 function shutdown(signal) {

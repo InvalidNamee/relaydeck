@@ -1,0 +1,15 @@
+{
+  "name": "@relaydeck/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "info": "tauri info"
+  }
+}

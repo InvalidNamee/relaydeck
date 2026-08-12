@@ -7,6 +7,7 @@
     "@relaydeck/client-core": "0.1.0",
     "@relaydeck/client-ui": "0.1.0",
     "@relaydeck/protocol": "0.1.0",
+    "@tauri-apps/api": "2.11.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
