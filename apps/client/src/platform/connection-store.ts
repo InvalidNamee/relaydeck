@@ -44,14 +44,16 @@ export const connectionStore: ConnectionStore = {
     const activeId = localStorage.getItem(ACTIVE_PROFILE_KEY);
     const profiles = loadProfiles();
     profiles.sort((left, right) => Number(right.id === activeId) - Number(left.id === activeId));
-    return Promise.all(
-      profiles.map(async (profile) => ({
+    const loaded: SavedConnection[] = [];
+    for (const profile of profiles) {
+      loaded.push({
         ...profile,
         token: IS_TAURI
           ? (await invoke<string | null>("get_gateway_secret", { profile: profile.id })) || ""
           : sessionStorage.getItem(`relaydeck.token.${profile.id}`) || "",
-      })),
-    );
+      });
+    }
+    return loaded;
   },
 
   async save(value) {
