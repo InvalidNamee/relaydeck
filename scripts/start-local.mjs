@@ -20,13 +20,13 @@ console.log("");
 console.log("Relaydeck 本地控制台");
 console.log(`  UI:      http://${process.env.UI_HOST || "127.0.0.1"}:3000`);
 console.log(
-  `  Gateway: ws://${process.env.GATEWAY_HOST || "127.0.0.1"}:${process.env.GATEWAY_PORT || "8788"}`,
+  `  Gateway: ws://${process.env.GATEWAY_HOST || "0.0.0.0"}:${process.env.GATEWAY_PORT || "8788"}`,
 );
 console.log(`  Token:   ${token}`);
 console.log("");
 
 start("npm", ["run", production ? "start:ui" : "dev:ui"]);
-start(process.execPath, ["gateway/server.mjs"], { GATEWAY_TOKEN: token });
+start(process.execPath, ["apps/gateway/src/server.mjs"], { GATEWAY_TOKEN: token });
 
 if (process.env.AUTO_START_CHROME === "1") {
   start(process.execPath, ["scripts/start-chrome.mjs"]);
