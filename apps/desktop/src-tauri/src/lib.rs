@@ -12,6 +12,13 @@ fn validate_profile(profile: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_secret(secret: &str) -> Result<(), String> {
+    if secret.len() < 32 || secret.len() > 512 {
+        return Err("网关访问令牌长度必须为 32-512 个字符".to_string());
+    }
+    Ok(())
+}
+
 fn entry(profile: &str) -> Result<keyring::Entry, String> {
     validate_profile(profile)?;
     keyring::Entry::new(KEYRING_SERVICE, profile)
@@ -31,9 +38,7 @@ async fn get_gateway_secret(profile: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 async fn set_gateway_secret(profile: String, secret: String) -> Result<(), String> {
-    if secret.len() < 12 || secret.len() > 512 {
-        return Err("网关访问令牌长度必须为 12-512 个字符".to_string());
-    }
+    validate_secret(&secret)?;
     tauri::async_runtime::spawn_blocking(move || {
         entry(&profile)?
             .set_password(&secret)
@@ -67,7 +72,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_profile;
+    use super::{validate_profile, validate_secret};
 
     #[test]
     fn validates_credential_profile_identifiers() {
@@ -76,5 +81,13 @@ mod tests {
         assert!(validate_profile("").is_err());
         assert!(validate_profile("../../other").is_err());
         assert!(validate_profile(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn validates_gateway_secret_lengths() {
+        assert!(validate_secret(&"a".repeat(31)).is_err());
+        assert!(validate_secret(&"a".repeat(32)).is_ok());
+        assert!(validate_secret(&"a".repeat(512)).is_ok());
+        assert!(validate_secret(&"a".repeat(513)).is_err());
     }
 }

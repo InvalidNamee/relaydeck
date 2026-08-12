@@ -364,6 +364,10 @@ export function RemoteBrowser({
       setError("请填写网关地址、访问令牌和设备名称。");
       return;
     }
+    if (token.trim().length < 32 || token.trim().length > 512) {
+      setError("网关访问令牌长度必须为 32-512 个字符。");
+      return;
+    }
 
     connectionCleanupRef.current?.();
     connectionRef.current?.disconnect();
@@ -766,6 +770,8 @@ export function RemoteBrowser({
             <input
               type="password"
               value={token}
+              minLength={32}
+              maxLength={512}
               onChange={(event) => setToken(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && connect()}
             />
