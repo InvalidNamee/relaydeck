@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 
-const token = process.env.GATEWAY_TOKEN || randomBytes(18).toString("base64url");
+const token = process.env.GATEWAY_TOKEN || randomBytes(32).toString("base64url");
 const children = [];
 
 function start(command, args, extraEnv = {}) {

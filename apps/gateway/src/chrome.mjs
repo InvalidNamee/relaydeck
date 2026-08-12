@@ -40,18 +40,16 @@ export class ChromeProcess {
       throw new Error("找不到 Chrome，请通过 CHROME_BIN 指定可执行文件路径");
     }
     mkdirSync(this.config.chromeProfileDirectory, { recursive: true, mode: 0o700 });
-    const child = spawn(
-      executable,
-      [
-        `--user-data-dir=${this.config.chromeProfileDirectory}`,
-        "--remote-debugging-address=127.0.0.1",
-        `--remote-debugging-port=${this.config.cdpPort}`,
-        "--no-first-run",
-        "--no-default-browser-check",
-        this.config.defaultUrl,
-      ],
-      { stdio: "inherit" },
-    );
+    const args = [
+      `--user-data-dir=${this.config.chromeProfileDirectory}`,
+      "--remote-debugging-address=127.0.0.1",
+      `--remote-debugging-port=${this.config.cdpPort}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+    ];
+    if (this.config.chromeHeadless) args.push("--headless=new");
+    args.push(this.config.defaultUrl);
+    const child = spawn(executable, args, { stdio: "inherit" });
     child.once("exit", () => {
       if (this.child === child) this.child = null;
     });

@@ -13,6 +13,7 @@
     "dev": "node --env-file-if-exists=.env.local scripts/start-local.mjs",
     "dev:client": "npm run dev -w @relaydeck/client",
     "gateway": "node --env-file-if-exists=.env.local apps/gateway/src/server.mjs",
+    "gateway:prepare": "npm run build:protocol && npm prune --omit=dev",
     "desktop:dev": "npm run dev -w @relaydeck/desktop",
     "desktop:build": "npm run build -w @relaydeck/desktop",
     "build": "npm run build:packages && npm run build -w @relaydeck/gateway && npm run build:client",
@@ -27,13 +28,13 @@
     "test:gateway": "npm test -w @relaydeck/gateway"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.4",
+    "@eslint/js": "9.39.5",
     "@types/node": "22.19.19",
-    "eslint": "9.39.4",
+    "eslint": "9.39.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.59.3"
+    "typescript-eslint": "8.67.0"
   },
   "type": "module"
 }

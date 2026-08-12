@@ -19,8 +19,8 @@ function boolean(name, fallback = false) {
 
 export function loadConfig() {
   const token = process.env.GATEWAY_TOKEN || "";
-  if (token.length < 12) {
-    throw new Error("GATEWAY_TOKEN 必须至少包含 12 个字符");
+  if (token.length < 32) {
+    throw new Error("GATEWAY_TOKEN 必须至少包含 32 个字符");
   }
 
   const dataDirectory = resolve(process.env.RELAYDECK_DATA_DIR || "data");
@@ -38,6 +38,7 @@ export function loadConfig() {
     ),
     chromeBinary: process.env.CHROME_BIN || "",
     autoStartChrome: boolean("AUTO_START_CHROME", false),
+    chromeHeadless: boolean("CHROME_HEADLESS", process.platform === "linux"),
     allowedOrigins: new Set(
       (process.env.GATEWAY_ALLOWED_ORIGINS || "")
         .split(",")

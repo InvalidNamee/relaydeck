@@ -5,8 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=relaydeck
+Group=relaydeck
 WorkingDirectory=/opt/relaydeck
 EnvironmentFile=/etc/relaydeck/gateway.env
+Environment=HOME=/var/lib/relaydeck
 ExecStart=/usr/bin/npm run gateway
 Restart=on-failure
 RestartSec=3
@@ -15,7 +18,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/relaydeck
+StateDirectory=relaydeck
+CacheDirectory=relaydeck
+ReadWritePaths=/var/lib/relaydeck /var/cache/relaydeck
 
 [Install]
 WantedBy=multi-user.target

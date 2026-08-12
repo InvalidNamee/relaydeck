@@ -7,10 +7,16 @@ Relaydeck 由两个独立部分组成：
 
 ## 网关主机
 
+首次部署或升级后先构建共享协议，再裁剪开发依赖：
+
 ```bash
-npm ci --omit=dev --ignore-scripts
-cp deploy/gateway.env.example .env.local
+npm ci --ignore-scripts
+npm run gateway:prepare
+cp .env.example .env.local
 ```
+
+不要在构建共享协议前直接执行 `npm ci --omit=dev`，否则运行时会缺少
+`packages/protocol/dist`。
 
 为 `GATEWAY_TOKEN` 生成至少 32 个随机字符，例如：
 
@@ -18,7 +24,7 @@ cp deploy/gateway.env.example .env.local
 openssl rand -base64 32
 ```
 
-修改 `.env.local` 后运行：
+修改 `.env.local` 后，在当前终端验证：
 
 ```bash
 npm run gateway
@@ -28,6 +34,7 @@ npm run gateway
 
 - 在 `0.0.0.0:8788` 接收局域网 WebSocket 连接；
 - 自动启动带独立 Profile 的 Chrome；
+- Linux 默认无头启动 Chrome，桌面主机可将 `CHROME_HEADLESS=0`；
 - 让 Chrome DevTools 端口只监听 `127.0.0.1:9222`；
 - 将工作区和 Chrome Profile 写入 `data/`。
 
@@ -40,8 +47,20 @@ npm run gateway
 ```
 
 Linux 常驻部署可以参照 `deploy/relaydeck-gateway.service`。将项目放在
-`/opt/relaydeck`，配置写入 `/etc/relaydeck/gateway.env`，可写数据目录设为
-`/var/lib/relaydeck`。
+`/opt/relaydeck`，并创建无登录权限的服务用户：
+
+```bash
+sudo useradd --system --home /var/lib/relaydeck --shell /usr/sbin/nologin relaydeck
+sudo install -d -o relaydeck -g relaydeck /var/lib/relaydeck
+sudo install -d /etc/relaydeck
+sudo install -m 600 deploy/gateway.env.example /etc/relaydeck/gateway.env
+sudo install -m 644 deploy/relaydeck-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now relaydeck-gateway
+```
+
+服务以 `relaydeck` 用户运行，配置位于 `/etc/relaydeck/gateway.env`，可写数据位于
+`/var/lib/relaydeck`。如果 `npm` 不在 `/usr/bin/npm`，需要相应修改服务文件。
 
 ## 局域网安全
 

@@ -47,8 +47,9 @@ cp .env.example .env.local
 ```
 
 ```dotenv
-GATEWAY_TOKEN=replace-with-a-long-random-token
+GATEWAY_TOKEN=replace-with-at-least-32-random-characters
 AUTO_START_CHROME=1
+CHROME_HEADLESS=0
 ```
 
 桌面客户端开发和生产构建：
@@ -74,13 +75,14 @@ npm run desktop:build
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `GATEWAY_TOKEN` | 必填 | 控制端访问令牌，至少 12 字符，生产建议随机 32 字符以上 |
+| `GATEWAY_TOKEN` | 必填 | 控制端访问令牌，至少 32 字符 |
 | `GATEWAY_HOST` | `0.0.0.0` | 网关监听地址 |
 | `GATEWAY_PORT` | `8788` | 网关 WebSocket 端口 |
 | `CDP_HTTP_URL` | `http://127.0.0.1:9222` | Chrome 调试发现地址 |
 | `CHROME_PROFILE_DIR` | `data/chrome-profile` | 专用 Chrome Profile |
 | `DEFAULT_URL` | `https://ac.nowcoder.com/` | 新页面默认地址 |
 | `AUTO_START_CHROME` | `0` | 是否随本地服务启动 Chrome |
+| `CHROME_HEADLESS` | Linux 为 `1`，其他系统为 `0` | 是否以无界面模式启动 Chrome |
 | `RELAYDECK_DATA_DIR` | `data` | 工作区状态和默认 Profile 根目录 |
 | `GATEWAY_ALLOWED_ORIGINS` | 空 | 可选的逗号分隔 Origin 白名单 |
 

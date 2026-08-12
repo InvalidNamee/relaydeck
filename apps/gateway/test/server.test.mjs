@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { WebSocket } from "ws";
 
-const TOKEN = "integration-test-secret";
+const TOKEN = "integration-test-secret-32-characters";
 
 async function startGateway(t) {
   const dataDirectory = await mkdtemp(join(tmpdir(), "relaydeck-gateway-"));
@@ -53,6 +53,21 @@ function nextMessage(socket) {
     socket.once("error", reject);
   });
 }
+
+test("rejects a gateway token shorter than 32 characters", async () => {
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, GATEWAY_TOKEN: "too-short" },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 1);
+  assert.match(stderr, /至少包含 32 个字符/);
+});
 
 test("authenticates a v1 client and reports gateway health", async (t) => {
   const { port } = await startGateway(t);
