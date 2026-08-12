@@ -27,28 +27,82 @@ import type {
 } from "@relaydeck/protocol";
 
 export type SavedConnection = {
+  id: string;
+  label: string;
   gatewayUrl: string;
   token: string;
   clientName: string;
 };
 
 export type ConnectionStore = {
-  load(): Promise<Partial<SavedConnection> | null>;
+  load(): Promise<SavedConnection[]>;
   save(value: SavedConnection): Promise<void>;
+  remove(id: string): Promise<void>;
 };
+
+const PROFILES_KEY = "relaydeck.profiles.v1";
+const ACTIVE_PROFILE_KEY = "relaydeck.activeProfile.v1";
+
+type StoredProfile = Omit<SavedConnection, "token">;
+
+function parseStoredProfiles(): StoredProfile[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]") as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (profile): profile is StoredProfile =>
+        Boolean(profile) &&
+        typeof profile.id === "string" &&
+        typeof profile.label === "string" &&
+        typeof profile.gatewayUrl === "string" &&
+        typeof profile.clientName === "string",
+    );
+  } catch {
+    return [];
+  }
+}
 
 const browserConnectionStore: ConnectionStore = {
   async load() {
-    return {
-      gatewayUrl: localStorage.getItem("relaydeck.gateway") || undefined,
-      token: sessionStorage.getItem("relaydeck.token") || undefined,
-      clientName: localStorage.getItem("relaydeck.name") || undefined,
-    };
+    let profiles = parseStoredProfiles();
+    if (!profiles.length && localStorage.getItem("relaydeck.gateway")) {
+      profiles = [
+        {
+          id: "default",
+          label: "默认网关",
+          gatewayUrl: localStorage.getItem("relaydeck.gateway") || "",
+          clientName: localStorage.getItem("relaydeck.name") || "",
+        },
+      ];
+    }
+    const activeId = localStorage.getItem(ACTIVE_PROFILE_KEY);
+    profiles.sort((left, right) => Number(right.id === activeId) - Number(left.id === activeId));
+    return profiles.map((profile) => ({
+      ...profile,
+      token: sessionStorage.getItem(`relaydeck.token.${profile.id}`) || "",
+    }));
   },
   async save(value) {
-    localStorage.setItem("relaydeck.gateway", value.gatewayUrl);
-    localStorage.setItem("relaydeck.name", value.clientName);
-    sessionStorage.setItem("relaydeck.token", value.token);
+    const profiles = parseStoredProfiles().filter((profile) => profile.id !== value.id);
+    profiles.push({
+      id: value.id,
+      label: value.label,
+      gatewayUrl: value.gatewayUrl,
+      clientName: value.clientName,
+    });
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    localStorage.setItem(ACTIVE_PROFILE_KEY, value.id);
+    sessionStorage.setItem(`relaydeck.token.${value.id}`, value.token);
+  },
+  async remove(id) {
+    localStorage.setItem(
+      PROFILES_KEY,
+      JSON.stringify(parseStoredProfiles().filter((profile) => profile.id !== id)),
+    );
+    sessionStorage.removeItem(`relaydeck.token.${id}`);
+    if (localStorage.getItem(ACTIVE_PROFILE_KEY) === id) {
+      localStorage.removeItem(ACTIVE_PROFILE_KEY);
+    }
   },
 };
 
@@ -107,6 +161,9 @@ export function RemoteBrowser({
   connectionStore?: ConnectionStore;
 } = {}) {
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
+  const [profiles, setProfiles] = useState<SavedConnection[]>([]);
+  const [profileId, setProfileId] = useState("default");
+  const [profileLabel, setProfileLabel] = useState("默认网关");
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [token, setToken] = useState("");
   const [clientName, setClientName] = useState("");
@@ -151,14 +208,26 @@ export function RemoteBrowser({
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
-      void connectionStore.load().then((saved) => {
-        if (!active) return;
-        setGatewayUrl(saved?.gatewayUrl || hostGatewayUrl());
-        setToken(saved?.token || "");
-        setClientName(
-          saved?.clientName || `设备-${Math.floor(100 + Math.random() * 900)}`,
-        );
-      });
+      void connectionStore
+        .load()
+        .then((savedProfiles) => {
+          if (!active) return;
+          setProfiles(savedProfiles);
+          const saved = savedProfiles[0];
+          setProfileId(saved?.id || "default");
+          setProfileLabel(saved?.label || "默认网关");
+          setGatewayUrl(saved?.gatewayUrl || hostGatewayUrl());
+          setToken(saved?.token || "");
+          setClientName(
+            saved?.clientName || `设备-${Math.floor(100 + Math.random() * 900)}`,
+          );
+        })
+        .catch((loadError) => {
+          if (!active) return;
+          setGatewayUrl(hostGatewayUrl());
+          setClientName(`设备-${Math.floor(100 + Math.random() * 900)}`);
+          setError(loadError instanceof Error ? loadError.message : "无法读取连接配置");
+        });
     });
     return () => {
       active = false;
@@ -323,11 +392,21 @@ export function RemoteBrowser({
           setChromeConnected(false);
         }
         if (snapshot.status === "online") {
-          void connectionStore.save({
+          const saved = {
+            id: profileId,
+            label: profileLabel.trim() || "未命名网关",
             gatewayUrl: normalizedUrl,
             token: token.trim(),
             clientName: clientName.trim(),
-          });
+          };
+          void connectionStore
+            .save(saved)
+            .then(() => {
+              setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+            })
+            .catch((saveError) => {
+              setError(saveError instanceof Error ? saveError.message : "无法保存连接配置");
+            });
         }
       }),
       relay.onMessage(handleServerMessage),
@@ -335,7 +414,51 @@ export function RemoteBrowser({
     ];
     connectionCleanupRef.current = () => cleanups.forEach((cleanup) => cleanup());
     relay.connect();
-  }, [clientName, connectionStore, drawBinaryFrame, gatewayUrl, handleServerMessage, token]);
+  }, [
+    clientName,
+    connectionStore,
+    drawBinaryFrame,
+    gatewayUrl,
+    handleServerMessage,
+    profileId,
+    profileLabel,
+    token,
+  ]);
+
+  const selectProfile = (id: string) => {
+    const profile = profiles.find((item) => item.id === id);
+    if (!profile) return;
+    setProfileId(profile.id);
+    setProfileLabel(profile.label);
+    setGatewayUrl(profile.gatewayUrl);
+    setToken(profile.token);
+    setClientName(profile.clientName);
+    setError("");
+  };
+
+  const createProfile = () => {
+    setProfileId(crypto.randomUUID());
+    setProfileLabel("新网关");
+    setGatewayUrl("ws://");
+    setToken("");
+    setError("");
+  };
+
+  const removeProfile = () => {
+    if (!profiles.some((profile) => profile.id === profileId)) return;
+    if (!window.confirm(`删除连接配置“${profileLabel}”？`)) return;
+    void connectionStore
+      .remove(profileId)
+      .then(() => {
+        const remaining = profiles.filter((profile) => profile.id !== profileId);
+        setProfiles(remaining);
+        if (remaining[0]) selectProfile(remaining[0].id);
+        else createProfile();
+      })
+      .catch((removeError) => {
+        setError(removeError instanceof Error ? removeError.message : "无法删除连接配置");
+      });
+  };
 
   useEffect(
     () => () => {
@@ -587,6 +710,42 @@ export function RemoteBrowser({
               <span>需要局域网网关访问令牌</span>
             </div>
           </div>
+          <div className="profile-toolbar">
+            <select
+              value={profiles.some((profile) => profile.id === profileId) ? profileId : ""}
+              onChange={(event) => selectProfile(event.target.value)}
+              aria-label="选择网关配置"
+            >
+              {!profiles.some((profile) => profile.id === profileId) && (
+                <option value="">尚未保存</option>
+              )}
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+            <button type="button" onClick={createProfile} title="新建网关配置">
+              新建
+            </button>
+            <button
+              type="button"
+              onClick={removeProfile}
+              disabled={!profiles.some((profile) => profile.id === profileId)}
+              title="删除当前网关配置"
+            >
+              删除
+            </button>
+          </div>
+          <label>
+            连接名称
+            <input
+              value={profileLabel}
+              maxLength={40}
+              onChange={(event) => setProfileLabel(event.target.value)}
+              placeholder="家里主机"
+            />
+          </label>
           <label>
             设备名称
             <input

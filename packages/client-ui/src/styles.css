@@ -142,6 +142,35 @@ button {
   border-bottom: 1px solid rgba(255, 255, 255, 0.16);
 }
 
+.profile-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.profile-toolbar select,
+.profile-toolbar button {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  padding: 9px 10px;
+}
+
+.profile-toolbar select option {
+  color: var(--ink);
+}
+
+.profile-toolbar button {
+  cursor: pointer;
+}
+
+.profile-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .panel-heading p {
   margin: 0 0 4px;
   font-weight: 700;
