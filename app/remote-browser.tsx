@@ -42,6 +42,7 @@ type ServerMessage =
   | { type: "state"; targets: Target[]; groups: Group[] }
   | { type: "group:created"; groupId: string }
   | { type: "viewing"; targetId: string }
+  | { type: "clipboard:text"; text: string }
   | {
       type: "frame";
       targetId: string;
@@ -85,6 +86,22 @@ function compactUrl(value: string) {
   }
 }
 
+async function writeLocalClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("copy failed");
+}
+
 export function RemoteBrowser() {
   const [connection, setConnection] = useState<ConnectionState>("setup");
   const [gatewayUrl, setGatewayUrl] = useState("");
@@ -105,6 +122,7 @@ export function RemoteBrowser() {
   const activeTargetRef = useRef<string | null>(null);
   const selectedGroupRef = useRef("default");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const latestFrameRef = useRef<string | null>(null);
   const drawPendingRef = useRef(false);
@@ -157,6 +175,31 @@ export function RemoteBrowser() {
     socket.send(JSON.stringify(message));
     return true;
   }, []);
+
+  useEffect(() => {
+    const canvasWrap = canvasWrapRef.current;
+    if (!canvasWrap || !activeTargetId || !isOwner) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const syncViewport = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const bounds = canvasWrap.getBoundingClientRect();
+        send({
+          type: "viewport",
+          targetId: activeTargetId,
+          width: Math.floor(bounds.width - 36),
+          height: Math.floor(bounds.height - 36),
+        });
+      }, 80);
+    };
+    const observer = new ResizeObserver(syncViewport);
+    observer.observe(canvasWrap);
+    syncViewport();
+    return () => {
+      observer.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeTargetId, isOwner, send]);
 
   const drawFrame = useCallback((data: string) => {
     latestFrameRef.current = data;
@@ -258,6 +301,14 @@ export function RemoteBrowser() {
       } else if (message.type === "viewing") {
         activeTargetRef.current = message.targetId;
         setActiveTargetId(message.targetId);
+      } else if (message.type === "clipboard:text") {
+        if (!message.text) {
+          setError("远端页面中没有检测到选中的文本。");
+          return;
+        }
+        void writeLocalClipboard(message.text).catch(() => {
+          setError("浏览器拒绝写入本机剪贴板，请允许剪贴板权限。");
+        });
       } else if (message.type === "frame") {
         if (
           message.targetId === activeTargetRef.current ||
@@ -352,6 +403,32 @@ export function RemoteBrowser() {
     send({ type: "navigate", targetId: activeTargetId, url: nextUrl });
   };
 
+  const copyFromRemote = () => {
+    if (!activeTargetId || !isOwner) return;
+    send({
+      type: "clipboard",
+      action: "copy",
+      targetId: activeTargetId,
+    });
+  };
+
+  const pasteToRemote = async () => {
+    if (!activeTargetId || !isOwner) return;
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      text = window.prompt("粘贴要发送到远端页面的文本") || "";
+    }
+    if (!text) return;
+    send({
+      type: "clipboard",
+      action: "paste",
+      targetId: activeTargetId,
+      text,
+    });
+  };
+
   const coordinateFor = (event: ReactMouseEvent | ReactWheelEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -408,6 +485,14 @@ export function RemoteBrowser() {
   const keyboard = (event: ReactKeyboardEvent<HTMLCanvasElement>) => {
     if (!activeTargetId || !isOwner || event.key === "F5") return;
     event.preventDefault();
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+      copyFromRemote();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+      void pasteToRemote();
+      return;
+    }
     const modifiers =
       (event.altKey ? 1 : 0) |
       (event.ctrlKey ? 2 : 0) |
@@ -679,6 +764,22 @@ export function RemoteBrowser() {
               aria-label="页面地址"
             />
           </form>
+          <div className="clipboard-actions">
+            <button
+              onClick={copyFromRemote}
+              disabled={!isOwner}
+              title="把远端选中的文本复制到本机"
+            >
+              复制出来
+            </button>
+            <button
+              onClick={() => void pasteToRemote()}
+              disabled={!isOwner}
+              title="把本机剪贴板文本粘贴到远端焦点"
+            >
+              粘贴进去
+            </button>
+          </div>
           {activeTarget && (
             <button
               className={`claim-button ${isOwner ? "owned" : ""}`}
@@ -713,7 +814,7 @@ export function RemoteBrowser() {
           </div>
         </div>
 
-        <div className="canvas-wrap">
+        <div className="canvas-wrap" ref={canvasWrapRef}>
           {activeTarget ? (
             <>
               <canvas

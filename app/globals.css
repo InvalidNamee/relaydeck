@@ -476,7 +476,7 @@ button {
 
 .browser-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(160px, 1fr) auto;
+  grid-template-columns: auto minmax(160px, 1fr) auto auto;
   gap: 14px;
   align-items: center;
   padding: 11px 18px;
@@ -525,6 +525,21 @@ button:disabled {
 .secure-mark {
   color: #2c654f;
   font-size: 8px;
+}
+
+.clipboard-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.clipboard-actions button {
+  height: 34px;
+  border: 1px solid var(--line);
+  padding: 0 10px;
+  background: white;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .claim-button {
@@ -791,6 +806,10 @@ button:disabled {
 
   .browser-toolbar {
     grid-template-columns: auto minmax(80px, 1fr);
+  }
+
+  .clipboard-actions {
+    display: none;
   }
 
   .claim-button {

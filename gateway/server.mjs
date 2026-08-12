@@ -322,8 +322,8 @@ async function ensureTargetSession(targetId) {
     {
       format: "jpeg",
       quality: 72,
-      maxWidth: 1600,
-      maxHeight: 1000,
+      maxWidth: 2560,
+      maxHeight: 1600,
       everyNthFrame: 1,
     },
     sessionId,
@@ -473,6 +473,36 @@ async function pageCommand(targetId, method, params = {}) {
   return cdp.command(method, params, session.sessionId);
 }
 
+function normalizedViewport(width, height) {
+  return {
+    width: Math.max(320, Math.min(2560, Math.round(Number(width) || 0))),
+    height: Math.max(240, Math.min(1600, Math.round(Number(height) || 0))),
+  };
+}
+
+async function setTargetViewport(targetId, viewport) {
+  const session = await ensureTargetSession(targetId);
+  if (
+    session.viewport?.width === viewport.width &&
+    session.viewport?.height === viewport.height
+  ) {
+    return;
+  }
+  await cdp.command(
+    "Emulation.setDeviceMetricsOverride",
+    {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: viewport.width,
+      screenHeight: viewport.height,
+    },
+    session.sessionId,
+  );
+  session.viewport = viewport;
+}
+
 async function handleClientMessage(client, message) {
   if (!message || typeof message !== "object") return;
 
@@ -483,6 +513,44 @@ async function handleClientMessage(client, message) {
     case "view":
       await viewTarget(client, String(message.targetId));
       break;
+    case "viewport": {
+      const targetId = String(message.targetId);
+      requireOwner(client, targetId);
+      const viewport = normalizedViewport(message.width, message.height);
+      client.viewport = viewport;
+      await setTargetViewport(targetId, viewport);
+      break;
+    }
+    case "clipboard": {
+      const targetId = String(message.targetId);
+      requireOwner(client, targetId);
+      if (message.action === "paste") {
+        const text = String(message.text || "").slice(0, 200_000);
+        await pageCommand(targetId, "Input.insertText", { text });
+      } else if (message.action === "copy") {
+        const result = await pageCommand(targetId, "Runtime.evaluate", {
+          expression: `(() => {
+            const active = document.activeElement;
+            if (
+              active &&
+              (active instanceof HTMLInputElement ||
+                active instanceof HTMLTextAreaElement) &&
+              typeof active.selectionStart === "number" &&
+              typeof active.selectionEnd === "number"
+            ) {
+              return active.value.slice(active.selectionStart, active.selectionEnd);
+            }
+            return window.getSelection()?.toString() || "";
+          })()`,
+          returnByValue: true,
+        });
+        send(client.socket, {
+          type: "clipboard:text",
+          text: String(result.result?.value || ""),
+        });
+      }
+      break;
+    }
     case "create": {
       if (!cdp) throw new Error("Chrome 未连接");
       const requestedGroupId = String(message.groupId || DEFAULT_GROUP_ID);
@@ -610,13 +678,19 @@ async function handleClientMessage(client, message) {
           deltaY: Number(message.deltaY || 0),
         });
       } else if (message.method === "key") {
+        const modifiers = Number(message.modifiers || 0);
+        const isSelectAll =
+          message.eventType === "keyDown" &&
+          (modifiers & (2 | 4)) !== 0 &&
+          String(message.key || "").toLowerCase() === "a";
         await pageCommand(targetId, "Input.dispatchKeyEvent", {
           type: message.eventType,
           key: String(message.key || ""),
           code: String(message.code || ""),
           text: String(message.text || ""),
-          modifiers: Number(message.modifiers || 0),
+          modifiers,
           windowsVirtualKeyCode: Number(message.windowsVirtualKeyCode || 0),
+          commands: isSelectAll ? ["selectAll"] : undefined,
         });
       }
       break;
@@ -697,6 +771,7 @@ server.on("upgrade", (request, socket, head) => {
       name: (requestUrl.searchParams.get("name") || "未命名设备").slice(0, 40),
       socket: websocket,
       targetId: null,
+      viewport: null,
     };
     clients.set(client.id, client);
 
