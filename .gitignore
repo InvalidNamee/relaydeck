@@ -40,6 +40,12 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+project.tar.gz
+
+# workspace build outputs
+/apps/*/dist/
+/packages/*/dist/
+/apps/desktop/src-tauri/target/
 
 # Relaydeck local browser profile
 /data/
