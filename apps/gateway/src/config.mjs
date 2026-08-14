@@ -17,6 +17,14 @@ function boolean(name, fallback = false) {
   throw new Error(`${name} 必须是 1/0 或 true/false`);
 }
 
+export function resolveChromeHeadless({
+  platform = process.platform,
+  configured = false,
+  hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY),
+} = {}) {
+  return configured || (platform === "linux" && !hasDisplay);
+}
+
 export function loadConfig() {
   const token = process.env.GATEWAY_TOKEN || "";
   if (token.length < 32) {
@@ -38,7 +46,10 @@ export function loadConfig() {
     ),
     chromeBinary: process.env.CHROME_BIN || "",
     autoStartChrome: boolean("AUTO_START_CHROME", false),
-    chromeHeadless: boolean("CHROME_HEADLESS", process.platform === "linux"),
+    chromeHeadless: resolveChromeHeadless({
+      platform: process.platform,
+      configured: boolean("CHROME_HEADLESS", process.platform === "linux"),
+    }),
     allowedOrigins: new Set(
       (process.env.GATEWAY_ALLOWED_ORIGINS || "")
         .split(",")

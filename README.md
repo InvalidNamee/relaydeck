@@ -82,7 +82,7 @@ npm run desktop:build
 | `CHROME_PROFILE_DIR` | `data/chrome-profile` | 专用 Chrome Profile |
 | `DEFAULT_URL` | `https://ac.nowcoder.com/` | 新页面默认地址 |
 | `AUTO_START_CHROME` | `0` | 是否随本地服务启动 Chrome |
-| `CHROME_HEADLESS` | Linux 为 `1`，其他系统为 `0` | 是否以无界面模式启动 Chrome |
+| `CHROME_HEADLESS` | Linux 为 `1`，其他系统为 `0` | 是否以无界面模式启动 Chrome；Linux 没有 `$DISPLAY`/`$WAYLAND_DISPLAY` 时会自动强制为 `1` |
 | `RELAYDECK_DATA_DIR` | `data` | 工作区状态和默认 Profile 根目录 |
 | `GATEWAY_ALLOWED_ORIGINS` | 空 | 可选的逗号分隔 Origin 白名单 |
 

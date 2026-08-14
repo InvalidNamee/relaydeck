@@ -34,7 +34,8 @@ npm run gateway
 
 - 在 `0.0.0.0:8788` 接收局域网 WebSocket 连接；
 - 自动启动带独立 Profile 的 Chrome；
-- Linux 默认无头启动 Chrome，桌面主机可将 `CHROME_HEADLESS=0`；
+- Linux 默认无头启动 Chrome，桌面主机可将 `CHROME_HEADLESS=0`；若 Linux 没有
+  `$DISPLAY`/`$WAYLAND_DISPLAY`，即使配置误写为 `0` 也会自动回退到无头模式；
 - 让 Chrome DevTools 端口只监听 `127.0.0.1:9222`；
 - 将工作区和 Chrome Profile 写入 `data/`。
 
