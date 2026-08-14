@@ -175,6 +175,8 @@ export function RemoteBrowser({
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
   const [frameInfo, setFrameInfo] = useState<FrameMetadata>({});
   const [lastFrameAt, setLastFrameAt] = useState(0);
 
@@ -506,9 +508,27 @@ export function RemoteBrowser({
   };
 
   const createGroup = () => {
-    const name = window.prompt("新分组名称");
-    if (!name?.trim()) return;
-    send({ type: "group:create", name: name.trim() });
+    if (connection !== "online") {
+      setError("网关尚未连接，暂时不能创建分组。");
+      return;
+    }
+    setNewGroupName("");
+    setError("");
+    setGroupDialogOpen(true);
+  };
+
+  const submitGroup = (event: FormEvent) => {
+    event.preventDefault();
+    const name = newGroupName.trim();
+    if (!name) {
+      setError("请输入分组名称。");
+      return;
+    }
+    if (!send({ type: "group:create", name })) {
+      setError("网关连接已断开，无法创建分组。");
+      return;
+    }
+    setGroupDialogOpen(false);
   };
 
   const deleteGroup = () => {
@@ -679,29 +699,29 @@ export function RemoteBrowser({
           <div className="brand-mark">RD</div>
           <p className="eyebrow">RELAYDECK / LAN GATEWAY</p>
           <h1>
-            一个 Chrome。
+            共享一个 Chrome。
             <br />
-            两台设备，各自操作。
+            按分组协作操作。
           </h1>
           <p className="connect-lede">
-            页面共享可见，输入按标签页隔离。认证状态留在服务器上的同一个
-            Chrome Profile 中。
+            Chrome 和登录状态留在网关主机。客户端只接收页面画面；取得分组控制权后，
+            才能输入、导航和使用剪贴板。
           </p>
           <div className="feature-grid">
             <div>
               <span>01</span>
-              <strong>独立页面输入</strong>
-              <p>每台设备绑定自己的页面目标。</p>
+              <strong>Chrome 留在网关</strong>
+              <p>登录状态和浏览器数据不会复制到客户端。</p>
             </div>
             <div>
               <span>02</span>
-              <strong>显式控制权</strong>
-              <p>同一页面只允许一个写入者。</p>
+              <strong>连接后选页面</strong>
+              <p>连接网关后查看标签页，并选择要操作的页面。</p>
             </div>
             <div>
               <span>03</span>
-              <strong>凭证不出站</strong>
-              <p>客户端只接收画面，不接收 Cookie。</p>
+              <strong>分组控制权互斥</strong>
+              <p>同一分组同时只有一个设备可以输入。</p>
             </div>
           </div>
         </section>
@@ -710,8 +730,8 @@ export function RemoteBrowser({
           <div className="panel-heading">
             <span className="status-dot" />
             <div>
-              <p>连接控制端</p>
-              <span>需要局域网网关访问令牌</span>
+              <p>连接到网关</p>
+              <span>填写运行 Chrome 的主机地址和访问令牌</span>
             </div>
           </div>
           <div className="profile-toolbar">
@@ -788,7 +808,9 @@ export function RemoteBrowser({
                 ? "重新连接"
                 : "进入控制台"}
           </button>
-          <p className="security-note">CDP 端口应始终只监听 127.0.0.1。</p>
+          <p className="security-note">
+            只连接你信任的网关地址。Chrome 调试端口不会暴露给客户端。
+          </p>
         </section>
       </main>
     );
@@ -807,12 +829,22 @@ export function RemoteBrowser({
 
         <div className="connection-card">
           <span
-            className={`status-dot ${chromeConnected ? "online" : "warning"}`}
+            className={`status-dot ${connection === "online" && chromeConnected ? "online" : "warning"}`}
           />
           <div>
-            <strong>{chromeConnected ? "Chrome 已连接" : "等待 Chrome"}</strong>
+            <strong>
+              {connection !== "online"
+                ? "网关未连接"
+                : chromeConnected
+                  ? "Chrome 已连接"
+                  : "等待网关上的 Chrome"}
+            </strong>
             <span>
-              {connection === "reconnecting" ? "正在重新连接…" : clientName}
+              {connection === "reconnecting"
+                ? "正在重新连接网关…"
+                : connection !== "online"
+                  ? "请检查网关地址和服务状态"
+                  : clientName}
             </span>
           </div>
         </div>
@@ -838,10 +870,17 @@ export function RemoteBrowser({
               </option>
             ))}
           </select>
-          <button onClick={createGroup} aria-label="创建分组" title="创建分组">
+          <button
+            type="button"
+            onClick={createGroup}
+            disabled={connection !== "online"}
+            aria-label="创建分组"
+            title={connection === "online" ? "创建分组" : "连接网关后才能创建分组"}
+          >
             G+
           </button>
           <button
+            type="button"
             onClick={deleteGroup}
             disabled={!activeGroup?.deletable}
             aria-label="删除当前分组"
@@ -850,6 +889,7 @@ export function RemoteBrowser({
             G−
           </button>
           <button
+            type="button"
             onClick={createTarget}
             disabled={!chromeConnected}
             aria-label="在当前分组新建页面"
@@ -858,6 +898,45 @@ export function RemoteBrowser({
             ＋
           </button>
         </div>
+
+        {groupDialogOpen && (
+          <div
+            className="group-dialog-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setGroupDialogOpen(false);
+            }}
+          >
+            <form
+              className="group-dialog"
+              onSubmit={submitGroup}
+              onMouseDown={(event) => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="group-dialog-title"
+            >
+              <p className="dialog-eyebrow">NEW GROUP</p>
+              <h2 id="group-dialog-title">创建分组</h2>
+              <p>分组用于把标签页分开管理，并分别分配控制权。</p>
+              <label>
+                分组名称
+                <input
+                  autoFocus
+                  value={newGroupName}
+                  maxLength={40}
+                  onChange={(event) => setNewGroupName(event.target.value)}
+                  placeholder="例如：登录、资料、后台"
+                />
+              </label>
+              <div className="group-dialog-actions">
+                <button type="button" onClick={() => setGroupDialogOpen(false)}>
+                  取消
+                </button>
+                <button type="submit">创建分组</button>
+              </div>
+            </form>
+          </div>
+        )}
 
         <nav className="target-list" aria-label="共享页面列表">
           {visibleTargets.map((target, index) => (
