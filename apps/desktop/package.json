@@ -7,9 +7,9 @@
     "@tauri-apps/cli": "2.11.4"
   },
   "scripts": {
-    "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "tauri": "node ../../scripts/with-rust.mjs tauri",
+    "dev": "node ../../scripts/with-rust.mjs tauri dev",
+    "build": "node ../../scripts/with-rust.mjs tauri build",
     "info": "tauri info"
   }
 }
