@@ -10,8 +10,10 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "npm run build:packages",
     "dev": "node --env-file-if-exists=.env.local scripts/start-local.mjs",
     "dev:client": "npm run dev -w @relaydeck/client",
+    "pregateway": "npm run build:protocol",
     "gateway": "node --env-file-if-exists=.env.local apps/gateway/src/server.mjs",
     "gateway:prepare": "npm run build:protocol && npm prune --omit=dev",
     "desktop:dev": "npm run dev -w @relaydeck/desktop",
@@ -20,7 +22,7 @@
     "build:client": "npm run build -w @relaydeck/client",
     "build:packages": "npm run build -w @relaydeck/protocol && npm run build -w @relaydeck/client-core && npm run typecheck -w @relaydeck/client-ui",
     "start": "npm run gateway",
-    "test": "npm run build && npm run test:protocol && npm test -w @relaydeck/client-core && npm run test:gateway",
+    "test": "npm run build && npm run test:protocol && npm test -w @relaydeck/client-core && npm test -w @relaydeck/client-ui && npm run test:gateway",
     "test:desktop": "node scripts/with-rust.mjs cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "lint": "eslint .",
     "build:protocol": "npm run build -w @relaydeck/protocol",

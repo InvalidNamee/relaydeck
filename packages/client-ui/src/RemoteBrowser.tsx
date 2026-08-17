@@ -19,9 +19,11 @@ import {
 } from "@relaydeck/client-core";
 import type {
   BinaryFrame,
+  ClaimRequest,
   ClientMessage,
   FrameMetadata,
   Group,
+  OnlineClient,
   ServerMessage,
   Target,
 } from "@relaydeck/protocol";
@@ -37,13 +39,52 @@ export type SavedConnection = {
 export type ConnectionStore = {
   load(): Promise<SavedConnection[]>;
   save(value: SavedConnection): Promise<void>;
+  activate(id: string): Promise<void>;
   remove(id: string): Promise<void>;
 };
 
 const PROFILES_KEY = "relaydeck.profiles.v1";
 const ACTIVE_PROFILE_KEY = "relaydeck.activeProfile.v1";
+const SETTINGS_KEY = "relaydeck.settings.v1";
+const MAX_CLIENT_NAME_LENGTH = 40;
+
+type ClientSettings = {
+  defaultPageUrl: string;
+};
+
+type Confirmation =
+  | { kind: "profile"; profileId: string; title: string; description: string }
+  | { kind: "group"; title: string; description: string }
+  | null;
 
 type StoredProfile = Omit<SavedConnection, "token">;
+
+function loadClientSettings(): ClientSettings {
+  try {
+    const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") as unknown;
+    if (
+      value &&
+      typeof value === "object" &&
+      "defaultPageUrl" in value &&
+      typeof value.defaultPageUrl === "string"
+    ) {
+      return { defaultPageUrl: value.defaultPageUrl };
+    }
+  } catch {
+    // Invalid settings fall back to the safe blank-page default.
+  }
+  return { defaultPageUrl: "" };
+}
+
+export function normalizeDefaultPageUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const url = new URL(trimmed);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("默认地址必须使用 http:// 或 https://");
+  }
+  return url.href;
+}
 
 function parseStoredProfiles(): StoredProfile[] {
   try {
@@ -60,6 +101,14 @@ function parseStoredProfiles(): StoredProfile[] {
   } catch {
     return [];
   }
+}
+
+function clearLegacyProfileStorage() {
+  localStorage.removeItem("relaydeck.gateway");
+  localStorage.removeItem("relaydeck.name");
+  sessionStorage.removeItem("relaydeck.gateway");
+  sessionStorage.removeItem("relaydeck.name");
+  sessionStorage.removeItem("relaydeck.token");
 }
 
 const browserConnectionStore: ConnectionStore = {
@@ -91,8 +140,11 @@ const browserConnectionStore: ConnectionStore = {
       clientName: value.clientName,
     });
     localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
-    localStorage.setItem(ACTIVE_PROFILE_KEY, value.id);
     sessionStorage.setItem(`relaydeck.token.${value.id}`, value.token);
+    clearLegacyProfileStorage();
+  },
+  async activate(id) {
+    localStorage.setItem(ACTIVE_PROFILE_KEY, id);
   },
   async remove(id) {
     localStorage.setItem(
@@ -100,6 +152,7 @@ const browserConnectionStore: ConnectionStore = {
       JSON.stringify(parseStoredProfiles().filter((profile) => profile.id !== id)),
     );
     sessionStorage.removeItem(`relaydeck.token.${id}`);
+    clearLegacyProfileStorage();
     if (localStorage.getItem(ACTIVE_PROFILE_KEY) === id) {
       localStorage.removeItem(ACTIVE_PROFILE_KEY);
     }
@@ -139,6 +192,35 @@ function compactUrl(value: string) {
   }
 }
 
+function newConnectionProfile(): SavedConnection {
+  return {
+    id: crypto.randomUUID(),
+    label: "新网关",
+    gatewayUrl: "ws://",
+    token: "",
+    clientName: `设备-${Math.floor(100 + Math.random() * 900)}`,
+  };
+}
+
+function validateConnectionProfile(value: SavedConnection): SavedConnection {
+  if (!value.gatewayUrl.trim() || !value.token.trim() || !value.clientName.trim()) {
+    throw new Error("请填写网关地址、访问令牌和本设备名称。");
+  }
+  if (value.token.trim().length < 32 || value.token.trim().length > 512) {
+    throw new Error("网关访问令牌长度必须为 32-512 个字符。");
+  }
+  if (value.clientName.trim().length > MAX_CLIENT_NAME_LENGTH) {
+    throw new Error(`本设备名称不能超过 ${MAX_CLIENT_NAME_LENGTH} 个字符。`);
+  }
+  return {
+    ...value,
+    label: value.label.trim() || "未命名网关",
+    gatewayUrl: normalizeGatewayUrl(value.gatewayUrl),
+    token: value.token.trim(),
+    clientName: value.clientName.trim(),
+  };
+}
+
 async function writeLocalClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -155,6 +237,209 @@ async function writeLocalClipboard(text: string) {
   if (!copied) throw new Error("copy failed");
 }
 
+function SettingsDialog({
+  profiles,
+  draft,
+  recentProfileId,
+  connectedProfileId,
+  connection,
+  defaultPageUrl,
+  error,
+  pending,
+  profilePending,
+  onSelect,
+  onNew,
+  onDraftChange,
+  onDefaultPageUrlChange,
+  onResetDefaultPageUrl,
+  onDelete,
+  onClose,
+  onSave,
+  onSaveAndConnect,
+  onSaveGeneral,
+  onClearError,
+}: {
+  profiles: SavedConnection[];
+  draft: SavedConnection;
+  recentProfileId: string;
+  connectedProfileId: string;
+  connection: ConnectionStatus;
+  defaultPageUrl: string;
+  error: string;
+  pending: boolean;
+  profilePending: boolean;
+  onSelect(value: SavedConnection): void;
+  onNew(): void;
+  onDraftChange(value: SavedConnection): void;
+  onDefaultPageUrlChange(value: string): void;
+  onResetDefaultPageUrl(): void;
+  onDelete(): void;
+  onClose(): void;
+  onSave(): void;
+  onSaveAndConnect(): void;
+  onSaveGeneral(): void;
+  onClearError(): void;
+}) {
+  const [section, setSection] = useState<"gateways" | "general">("gateways");
+  return (
+    <div className="group-dialog-backdrop" role="presentation">
+      <section
+        className="group-dialog settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-dialog-title"
+      >
+        <header className="settings-header">
+          <div>
+            <p className="dialog-eyebrow">CLIENT SETTINGS</p>
+            <h2 id="settings-dialog-title">客户端设置</h2>
+          </div>
+          <button type="button" className="settings-close" onClick={onClose} aria-label="关闭设置">×</button>
+        </header>
+        <div className="settings-layout">
+          <aside className="settings-profiles">
+            <nav className="settings-navigation" aria-label="设置分类">
+              <button type="button" className={section === "gateways" ? "active" : ""} onClick={() => { setSection("gateways"); onClearError(); }}>网关配置</button>
+              <button type="button" className={section === "general" ? "active" : ""} onClick={() => { setSection("general"); onClearError(); }}>通用设置</button>
+            </nav>
+            {section === "gateways" && <>
+              <div className="settings-section-title">
+                <span>已保存的网关</span>
+                <button type="button" onClick={onNew}>新增</button>
+              </div>
+              <div className="settings-profile-list">
+                {profiles.map((profile) => {
+                  const connected = profile.id === connectedProfileId;
+                  const reconnecting = connected && connection === "reconnecting";
+                  return (
+                    <button
+                      type="button"
+                      key={profile.id}
+                      className={profile.id === draft.id ? "active" : ""}
+                      onClick={() => onSelect(profile)}
+                    >
+                      <strong>{profile.label}</strong>
+                      <span>{compactUrl(profile.gatewayUrl)}</span>
+                      <small>
+                        {connected ? (reconnecting ? "正在重连" : "已连接") : profile.id === recentProfileId ? "最近使用" : ""}
+                      </small>
+                    </button>
+                  );
+                })}
+                {!profiles.length && <p>还没有保存的网关。</p>}
+              </div>
+            </>}
+          </aside>
+          <div className="settings-editor">
+            {section === "gateways" ? <section>
+              <div className="settings-section-title"><span>网关连接</span></div>
+              <div className="settings-fields two-columns">
+                <label>
+                  网关名称
+                  <input aria-label="网关名称" autoFocus value={draft.label} maxLength={40} onChange={(event) => onDraftChange({ ...draft, label: event.target.value })} />
+                  <small>仅用于在本机区分不同服务器，例如“办公室网关”。</small>
+                </label>
+                <label>
+                  本设备名称
+                  <input aria-label="本设备名称" value={draft.clientName} maxLength={MAX_CLIENT_NAME_LENGTH} onChange={(event) => onDraftChange({ ...draft, clientName: event.target.value })} />
+                  <small>连接后会展示给其他在线成员，例如“亚飞的 MacBook”。</small>
+                </label>
+                <label className="full-column">
+                  网关地址
+                  <input value={draft.gatewayUrl} placeholder="ws://192.168.1.20:8788" onChange={(event) => onDraftChange({ ...draft, gatewayUrl: event.target.value })} />
+                </label>
+                <label className="full-column">
+                  访问令牌
+                  <input type="password" value={draft.token} minLength={32} maxLength={512} onChange={(event) => onDraftChange({ ...draft, token: event.target.value })} />
+                </label>
+              </div>
+              <div className="settings-profile-actions">
+                <button type="button" className="danger-link" onClick={onDelete} disabled={!profiles.some((profile) => profile.id === draft.id) || profilePending}>删除配置</button>
+                <span />
+                <button type="button" onClick={onSave} disabled={profilePending}>{profilePending ? "正在保存…" : "保存"}</button>
+                <button type="button" className="primary-inline" onClick={onSaveAndConnect} disabled={profilePending}>保存并连接</button>
+              </div>
+            </section> : <section className="general-settings standalone-settings">
+              <div className="settings-section-title"><span>新页面</span></div>
+              <h3>新页面默认地址</h3>
+              <p>此设置应用于当前客户端连接的所有网关。</p>
+              <label>
+                默认地址
+                <input aria-label="新页面默认地址" autoFocus value={defaultPageUrl} onChange={(event) => onDefaultPageUrlChange(event.target.value)} placeholder="留空时打开空白页" />
+              </label>
+              <div className="settings-help-row">
+                <p className="dialog-help">仅支持完整的 HTTP 或 HTTPS 地址。</p>
+                <button type="button" onClick={onResetDefaultPageUrl}>恢复为空白页</button>
+              </div>
+              <div className="settings-general-actions">
+                <button type="button" className="primary-inline" onClick={onSaveGeneral} disabled={pending}>保存通用设置</button>
+              </div>
+            </section>}
+            {error && <p className="dialog-error settings-error">{error}</p>}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  value,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  value: Exclude<Confirmation, null>;
+  pending: boolean;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  return (
+    <div className="group-dialog-backdrop" role="presentation">
+      <section
+        className="group-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+      >
+        <p className="dialog-eyebrow">CONFIRM ACTION</p>
+        <h2 id="confirm-dialog-title">{value.title}</h2>
+        <p>{value.description}</p>
+        <div className="group-dialog-actions">
+          <button type="button" onClick={onCancel} disabled={pending}>取消</button>
+          <button type="button" className="danger-button" onClick={onConfirm} disabled={pending}>
+            {pending ? "正在删除…" : "确认删除"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ClaimApprovalDialog({
+  request,
+  pending,
+  onRespond,
+}: {
+  request: ClaimRequest;
+  pending: boolean;
+  onRespond(approved: boolean): void;
+}) {
+  return (
+    <div className="group-dialog-backdrop" role="presentation">
+      <section className="group-dialog" role="alertdialog" aria-modal="true" aria-labelledby="claim-dialog-title">
+        <p className="dialog-eyebrow">CONTROL REQUEST</p>
+        <h2 id="claim-dialog-title">控制权申请</h2>
+        <p><strong>{request.requesterName}</strong> 想要控制“{request.groupName}”。同意后，你将立即失去该分组的操作权。</p>
+        <div className="group-dialog-actions">
+          <button type="button" onClick={() => onRespond(false)} disabled={pending}>拒绝</button>
+          <button type="button" onClick={() => onRespond(true)} disabled={pending}>{pending ? "正在处理…" : "同意并移交"}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function RemoteBrowser({
   connectionStore = browserConnectionStore,
 }: {
@@ -162,21 +447,36 @@ export function RemoteBrowser({
 } = {}) {
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [profiles, setProfiles] = useState<SavedConnection[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [recentProfileId, setRecentProfileId] = useState("");
+  const [connectedProfileId, setConnectedProfileId] = useState("");
   const [profileId, setProfileId] = useState("default");
-  const [profileLabel, setProfileLabel] = useState("默认网关");
-  const [gatewayUrl, setGatewayUrl] = useState("");
-  const [token, setToken] = useState("");
   const [clientName, setClientName] = useState("");
   const [clientId, setClientId] = useState("");
   const [chromeConnected, setChromeConnected] = useState(false);
   const [targets, setTargets] = useState<Target[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [onlineClients, setOnlineClients] = useState<OnlineClient[]>([]);
+  const [incomingClaims, setIncomingClaims] = useState<ClaimRequest[]>([]);
+  const [pendingClaims, setPendingClaims] = useState<Record<string, { requestId: string; ownerName: string }>>({});
+  const [claimResponsePending, setClaimResponsePending] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState("default");
   const [activeTargetId, setActiveTargetId] = useState<string | null>(null);
   const [address, setAddress] = useState("");
-  const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [chromeError, setChromeError] = useState("");
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  const [groupCreatePending, setGroupCreatePending] = useState(false);
+  const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [confirmationPending, setConfirmationPending] = useState(false);
+  const [defaultPageUrl, setDefaultPageUrl] = useState("");
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [settingsProfileDraft, setSettingsProfileDraft] = useState<SavedConnection>(() => newConnectionProfile());
+  const [settingsDefaultPageDraft, setSettingsDefaultPageDraft] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsPending, setSettingsPending] = useState(false);
   const [frameInfo, setFrameInfo] = useState<FrameMetadata>({});
   const [lastFrameAt, setLastFrameAt] = useState(0);
 
@@ -186,11 +486,31 @@ export function RemoteBrowser({
   const selectedGroupRef = useRef("default");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
   const imeInputRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
   const frameSequenceRef = useRef(0);
+  const pendingGroupDeleteRef = useRef<string | null>(null);
   const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wheelDeltaRef = useRef({ x: 0, y: 0 });
+  const startupRestoreRef = useRef(false);
+  const activationSequenceRef = useRef(0);
+  const pendingCloseFallbackRef = useRef<string[] | null>(null);
+
+  const resetViewerState = useCallback(() => {
+    activeTargetRef.current = null;
+    setActiveTargetId(null);
+    setAddress("");
+    setFrameInfo({});
+    setLastFrameAt(0);
+    frameSequenceRef.current += 1;
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }, []);
 
   const activeTarget = useMemo(
     () => targets.find((target) => target.targetId === activeTargetId) ?? null,
@@ -205,36 +525,6 @@ export function RemoteBrowser({
     [selectedGroupId, targets],
   );
   const isOwner = activeTarget?.ownerId === clientId;
-
-  useEffect(() => {
-    let active = true;
-    queueMicrotask(() => {
-      if (!active) return;
-      void connectionStore
-        .load()
-        .then((savedProfiles) => {
-          if (!active) return;
-          setProfiles(savedProfiles);
-          const saved = savedProfiles[0];
-          setProfileId(saved?.id || "default");
-          setProfileLabel(saved?.label || "默认网关");
-          setGatewayUrl(saved?.gatewayUrl || hostGatewayUrl());
-          setToken(saved?.token || "");
-          setClientName(
-            saved?.clientName || `设备-${Math.floor(100 + Math.random() * 900)}`,
-          );
-        })
-        .catch((loadError) => {
-          if (!active) return;
-          setGatewayUrl(hostGatewayUrl());
-          setClientName(`设备-${Math.floor(100 + Math.random() * 900)}`);
-          setError(loadError instanceof Error ? loadError.message : "无法读取连接配置");
-        });
-    });
-    return () => {
-      active = false;
-    };
-  }, [connectionStore]);
 
   useEffect(() => {
     activeTargetRef.current = activeTargetId;
@@ -298,7 +588,7 @@ export function RemoteBrowser({
       setFrameInfo(frame.metadata);
       const bytes = frame.jpeg.slice();
       void drawBlob(new Blob([bytes.buffer], { type: "image/jpeg" })).catch(() => {
-        setError("无法解码远程画面。");
+        setActionError("无法解码远程画面。");
       });
     },
     [drawBlob],
@@ -311,6 +601,16 @@ export function RemoteBrowser({
       } else if (message.type === "state") {
         setTargets(message.targets);
         setGroups(message.groups);
+        setOnlineClients(message.clients || []);
+        if (
+          pendingGroupDeleteRef.current &&
+          !message.groups.some((group) => group.id === pendingGroupDeleteRef.current)
+        ) {
+          pendingGroupDeleteRef.current = null;
+          setConfirmationPending(false);
+          setConfirmation(null);
+          setActionError("");
+        }
         if (!message.groups.some((group) => group.id === selectedGroupRef.current)) {
           selectedGroupRef.current = "default";
           setSelectedGroupId("default");
@@ -318,20 +618,59 @@ export function RemoteBrowser({
         const viewed = message.targets.find(
           (target) => target.targetId === activeTargetRef.current,
         );
-        if (viewed) setAddress(viewed.url);
+        if (viewed) {
+          setAddress(viewed.url);
+        } else if (activeTargetRef.current) {
+          const fallback = pendingCloseFallbackRef.current
+            ?.map((targetId) => message.targets.find((target) => target.targetId === targetId))
+            .find((target): target is Target => Boolean(target));
+          pendingCloseFallbackRef.current = null;
+          if (fallback) {
+            activeTargetRef.current = fallback.targetId;
+            setActiveTargetId(fallback.targetId);
+            setAddress(fallback.url);
+            connectionRef.current?.send({ type: "view", targetId: fallback.targetId });
+          } else {
+            resetViewerState();
+          }
+        }
       } else if (message.type === "group:created") {
+        resetViewerState();
         selectedGroupRef.current = message.groupId;
         setSelectedGroupId(message.groupId);
+        setGroupCreatePending(false);
+        setGroupDialogOpen(false);
+        setActionError("");
+      } else if (message.type === "claim:requested") {
+        setIncomingClaims((current) => [
+          ...current.filter((request) => request.requestId !== message.request.requestId),
+          message.request,
+        ]);
+      } else if (message.type === "claim:pending") {
+        setPendingClaims((current) => ({
+          ...current,
+          [message.groupId]: { requestId: message.requestId, ownerName: message.ownerName },
+        }));
+        setActionError(`已向 ${message.ownerName} 发送控制权申请。`);
+      } else if (message.type === "claim:resolved") {
+        setClaimResponsePending(false);
+        setIncomingClaims((current) => current.filter((request) => request.requestId !== message.requestId));
+        setPendingClaims((current) => {
+          const next = { ...current };
+          if (next[message.groupId]?.requestId === message.requestId) delete next[message.groupId];
+          return next;
+        });
+        setActionError(message.message);
       } else if (message.type === "viewing") {
         activeTargetRef.current = message.targetId;
         setActiveTargetId(message.targetId);
       } else if (message.type === "clipboard:text") {
         if (!message.text) {
-          setError("远端页面中没有检测到选中的文本。");
+          setActionError("远端页面中没有检测到选中的文本。");
           return;
         }
         void writeLocalClipboard(message.text).catch(() => {
-          setError("系统拒绝写入剪贴板，请检查客户端权限。");
+          setActionError("系统拒绝写入剪贴板，请检查客户端权限。");
         });
       } else if (message.type === "frame") {
         if (message.targetId === activeTargetRef.current || !activeTargetRef.current) {
@@ -341,12 +680,22 @@ export function RemoteBrowser({
         }
       } else if (message.type === "chrome") {
         setChromeConnected(message.connected);
-        if (message.message) setError(message.message);
+        if (message.connected) {
+          setChromeError("");
+        } else {
+          resetViewerState();
+          setChromeError(message.message || "正在等待 Chrome。");
+        }
       } else if (message.type === "error") {
-        setError(message.message);
+        setClaimResponsePending(false);
+        setGroupCreatePending(false);
+        pendingGroupDeleteRef.current = null;
+        pendingCloseFallbackRef.current = null;
+        setConfirmationPending(false);
+        setActionError(message.message);
       }
     },
-    [drawBlob],
+    [drawBlob, resetViewerState],
   );
 
   const disconnect = useCallback(() => {
@@ -354,64 +703,107 @@ export function RemoteBrowser({
     connectionCleanupRef.current = null;
     connectionRef.current?.disconnect();
     connectionRef.current = null;
-    setConnection("offline");
+    setConnection("idle");
     setClientId("");
-    setActiveTargetId(null);
+    setConnectedProfileId("");
+    setChromeConnected(false);
     setTargets([]);
     setGroups([]);
-  }, []);
+    setOnlineClients([]);
+    setIncomingClaims([]);
+    setPendingClaims({});
+    setConnectionError("");
+    setActionError("");
+    setChromeError("");
+    setGroupDialogOpen(false);
+    setGroupCreatePending(false);
+    setConfirmation(null);
+    setConfirmationPending(false);
+    pendingGroupDeleteRef.current = null;
+    pendingCloseFallbackRef.current = null;
+    resetViewerState();
+  }, [resetViewerState]);
 
-  const connect = useCallback(() => {
-    if (!gatewayUrl.trim() || !token.trim() || !clientName.trim()) {
-      setError("请填写网关地址、访问令牌和设备名称。");
-      return;
+  const connectProfile = useCallback((candidate: SavedConnection, closeSettingsOnSuccess = false) => {
+    let nextProfile: SavedConnection;
+    try {
+      nextProfile = validateConnectionProfile(candidate);
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : "连接配置不完整。";
+      setConnectionError("");
+      setSettingsError(message);
+      setSettingsProfileDraft(candidate);
+      setSettingsDialogOpen(true);
+      setConnection("idle");
+      return false;
     }
-    if (token.trim().length < 32 || token.trim().length > 512) {
-      setError("网关访问令牌长度必须为 32-512 个字符。");
-      return;
-    }
-
     connectionCleanupRef.current?.();
     connectionRef.current?.disconnect();
-    setError("");
+    connectionCleanupRef.current = null;
+    connectionRef.current = null;
+    setClientId("");
+    setConnectedProfileId("");
+    setChromeConnected(false);
+    setTargets([]);
+    setGroups([]);
+    setOnlineClients([]);
+    setIncomingClaims([]);
+    setPendingClaims({});
+    pendingCloseFallbackRef.current = null;
+    resetViewerState();
+    setConnectionError("");
+    setActionError("");
+    setChromeError("");
     setConnection("connecting");
-    let normalizedUrl: string;
-    try {
-      normalizedUrl = normalizeGatewayUrl(gatewayUrl);
-    } catch (nextError) {
-      setConnection("offline");
-      setError(nextError instanceof Error ? nextError.message : "网关地址格式不正确。");
-      return;
-    }
+    setProfileId(nextProfile.id);
+    setClientName(nextProfile.clientName);
     const relay = new RelayConnection({
-      url: normalizedUrl,
-      token: token.trim(),
-      name: clientName.trim(),
+      url: nextProfile.gatewayUrl,
+      token: nextProfile.token,
+      name: nextProfile.clientName,
     });
     connectionRef.current = relay;
     const cleanups = [
       relay.onState((snapshot) => {
         setConnection(snapshot.status);
-        if (snapshot.error) setError(snapshot.error);
+        if (snapshot.error) setConnectionError(snapshot.error);
+        if (snapshot.status === "reconnecting" || snapshot.status === "offline") {
+          setClientId("");
+          setChromeConnected(false);
+          setTargets([]);
+          setGroups([]);
+          setOnlineClients([]);
+          setIncomingClaims([]);
+          setPendingClaims({});
+          pendingCloseFallbackRef.current = null;
+          resetViewerState();
+        }
         if (snapshot.status === "auth-failed") {
           setClientId("");
           setChromeConnected(false);
+          setConnectionError("");
+          setSettingsProfileDraft(nextProfile);
+          setSettingsError(snapshot.error || "网关认证失败，请检查连接配置。");
+          setSettingsDialogOpen(true);
         }
         if (snapshot.status === "online") {
-          const saved = {
-            id: profileId,
-            label: profileLabel.trim() || "未命名网关",
-            gatewayUrl: normalizedUrl,
-            token: token.trim(),
-            clientName: clientName.trim(),
-          };
+          const activationSequence = ++activationSequenceRef.current;
+          setConnectionError("");
+          setConnectedProfileId(nextProfile.id);
+          setRecentProfileId(nextProfile.id);
           void connectionStore
-            .save(saved)
+            .save(nextProfile)
             .then(() => {
-              setProfiles((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+              setProfiles((current) => [nextProfile, ...current.filter((item) => item.id !== nextProfile.id)]);
+              if (activationSequence !== activationSequenceRef.current) return;
+              return connectionStore.activate(nextProfile.id);
+            })
+            .then(() => {
+              if (activationSequence !== activationSequenceRef.current) return;
+              if (closeSettingsOnSuccess) setSettingsDialogOpen(false);
             })
             .catch((saveError) => {
-              setError(saveError instanceof Error ? saveError.message : "无法保存连接配置");
+              setActionError(saveError instanceof Error ? saveError.message : "无法保存连接配置");
             });
         }
       }),
@@ -420,51 +812,116 @@ export function RemoteBrowser({
     ];
     connectionCleanupRef.current = () => cleanups.forEach((cleanup) => cleanup());
     relay.connect();
+    return true;
   }, [
-    clientName,
     connectionStore,
     drawBinaryFrame,
-    gatewayUrl,
     handleServerMessage,
-    profileId,
-    profileLabel,
-    token,
+    resetViewerState,
   ]);
 
-  const selectProfile = (id: string) => {
-    const profile = profiles.find((item) => item.id === id);
-    if (!profile) return;
-    setProfileId(profile.id);
-    setProfileLabel(profile.label);
-    setGatewayUrl(profile.gatewayUrl);
-    setToken(profile.token);
-    setClientName(profile.clientName);
-    setError("");
-  };
-
-  const createProfile = () => {
-    setProfileId(crypto.randomUUID());
-    setProfileLabel("新网关");
-    setGatewayUrl("ws://");
-    setToken("");
-    setError("");
-  };
-
   const removeProfile = () => {
-    if (!profiles.some((profile) => profile.id === profileId)) return;
-    if (!window.confirm(`删除连接配置“${profileLabel}”？`)) return;
-    void connectionStore
-      .remove(profileId)
-      .then(() => {
-        const remaining = profiles.filter((profile) => profile.id !== profileId);
-        setProfiles(remaining);
-        if (remaining[0]) selectProfile(remaining[0].id);
-        else createProfile();
-      })
-      .catch((removeError) => {
-        setError(removeError instanceof Error ? removeError.message : "无法删除连接配置");
-      });
+    if (!profiles.some((profile) => profile.id === settingsProfileDraft.id)) return;
+    setActionError("");
+    setConfirmation({
+      kind: "profile",
+      profileId: settingsProfileDraft.id,
+      title: `删除“${settingsProfileDraft.label}”？`,
+      description: "该网关地址和保存在系统凭据库中的访问令牌都会从本机移除。",
+    });
   };
+
+  const openSettings = () => {
+    const selected = profiles.find((profile) => profile.id === connectedProfileId)
+      || profiles.find((profile) => profile.id === profileId)
+      || profiles[0]
+      || newConnectionProfile();
+    setSettingsProfileDraft(selected);
+    setSettingsDefaultPageDraft(defaultPageUrl);
+    setSettingsError("");
+    setSettingsDialogOpen(true);
+  };
+
+  const persistSettingsDraft = async () => {
+    try {
+      setSettingsPending(true);
+      const saved = validateConnectionProfile(settingsProfileDraft);
+      await connectionStore.save(saved);
+      setProfiles((current) => [saved, ...current.filter((profile) => profile.id !== saved.id)]);
+      setSettingsProfileDraft(saved);
+      setSettingsError("");
+      setActionError("");
+      return saved;
+    } catch (settingsSaveError) {
+      setSettingsError(
+        settingsSaveError instanceof Error ? settingsSaveError.message : "无法保存客户端设置。",
+      );
+      return null;
+    } finally {
+      setSettingsPending(false);
+    }
+  };
+
+  const saveAndConnect = async () => {
+    const saved = await persistSettingsDraft();
+    if (saved) connectProfile(saved, true);
+  };
+
+  const persistGeneralSettings = () => {
+    try {
+      const normalized = normalizeDefaultPageUrl(settingsDefaultPageDraft);
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ defaultPageUrl: normalized }));
+      setDefaultPageUrl(normalized);
+      setSettingsDefaultPageDraft(normalized);
+      setSettingsError("");
+      setActionError("");
+    } catch (settingsSaveError) {
+      setSettingsError(
+        settingsSaveError instanceof Error ? settingsSaveError.message : "默认地址格式不正确。",
+      );
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active || startupRestoreRef.current) return;
+      startupRestoreRef.current = true;
+      const settings = loadClientSettings();
+      setDefaultPageUrl(settings.defaultPageUrl);
+      setSettingsDefaultPageDraft(settings.defaultPageUrl);
+      void connectionStore
+        .load()
+        .then((savedProfiles) => {
+          if (!active) return;
+          setProfiles(savedProfiles);
+          setProfilesLoaded(true);
+          const saved = savedProfiles[0];
+          if (!saved) {
+            const draft = newConnectionProfile();
+            draft.gatewayUrl = hostGatewayUrl();
+            setSettingsProfileDraft(draft);
+            setSettingsDialogOpen(true);
+            return;
+          }
+          setRecentProfileId(saved.id);
+          setSettingsProfileDraft(saved);
+          connectProfile(saved);
+        })
+        .catch((loadError) => {
+          if (!active) return;
+          const draft = newConnectionProfile();
+          draft.gatewayUrl = hostGatewayUrl();
+          setProfilesLoaded(true);
+          setSettingsProfileDraft(draft);
+          setSettingsError(loadError instanceof Error ? loadError.message : "无法读取连接配置");
+          setSettingsDialogOpen(true);
+        });
+    });
+    return () => {
+      active = false;
+    };
+  }, [connectProfile, connectionStore]);
 
   useEffect(
     () => () => {
@@ -475,6 +932,7 @@ export function RemoteBrowser({
   );
 
   const openTarget = (targetId: string) => {
+    resetViewerState();
     activeTargetRef.current = targetId;
     setActiveTargetId(targetId);
     const nextTarget = targets.find((target) => target.targetId === targetId);
@@ -484,15 +942,20 @@ export function RemoteBrowser({
   };
 
   const createTarget = () => {
-    send({
+    if (!chromeConnected || connection !== "online") {
+      setActionError("Chrome 尚未连接，暂时不能新建页面。");
+      return;
+    }
+    const message: Extract<ClientMessage, { type: "create" }> = {
       type: "create",
-      url: "https://ac.nowcoder.com/",
       groupId: selectedGroupId,
       afterTargetId:
         activeTarget?.groupId === selectedGroupId
           ? activeTarget.targetId
           : undefined,
-    });
+    };
+    if (defaultPageUrl) message.url = defaultPageUrl;
+    if (!send(message)) setActionError("网关连接已断开，无法新建页面。");
   };
 
   const selectGroup = (groupId: string) => {
@@ -502,18 +965,18 @@ export function RemoteBrowser({
     if (firstTarget) {
       openTarget(firstTarget.targetId);
     } else {
-      activeTargetRef.current = null;
-      setActiveTargetId(null);
+      resetViewerState();
     }
   };
 
   const createGroup = () => {
     if (connection !== "online") {
-      setError("网关尚未连接，暂时不能创建分组。");
+      setActionError("网关尚未连接，暂时不能创建分组。");
       return;
     }
     setNewGroupName("");
-    setError("");
+    setActionError("");
+    setGroupCreatePending(false);
     setGroupDialogOpen(true);
   };
 
@@ -521,32 +984,88 @@ export function RemoteBrowser({
     event.preventDefault();
     const name = newGroupName.trim();
     if (!name) {
-      setError("请输入分组名称。");
+      setActionError("请输入分组名称。");
       return;
     }
+    setActionError("");
+    setGroupCreatePending(true);
     if (!send({ type: "group:create", name })) {
-      setError("网关连接已断开，无法创建分组。");
+      setGroupCreatePending(false);
+      setActionError("网关连接已断开，无法创建分组。");
       return;
     }
-    setGroupDialogOpen(false);
   };
 
   const deleteGroup = () => {
     if (!activeGroup?.deletable) return;
-    const confirmed = window.confirm(
-      `删除“${activeGroup.name}”？组内标签页会保留并移入默认工作区。`,
-    );
-    if (confirmed) {
-      send({ type: "group:delete", groupId: activeGroup.id });
+    setActionError("");
+    setConfirmation({
+      kind: "group",
+      title: `删除“${activeGroup.name}”？`,
+      description: "组内标签页会保留，并自动移入默认工作区。",
+    });
+  };
+
+  const confirmDelete = () => {
+    if (!confirmation) return;
+    setConfirmationPending(true);
+    setActionError("");
+    if (confirmation.kind === "group") {
+      if (!activeGroup || !send({ type: "group:delete", groupId: activeGroup.id })) {
+        setConfirmationPending(false);
+        setActionError("网关连接已断开，无法删除分组。");
+        return;
+      }
+      pendingGroupDeleteRef.current = activeGroup.id;
+      return;
     }
+    const removedProfileId = confirmation.profileId;
+    if (removedProfileId === connectedProfileId) disconnect();
+    void connectionStore
+      .remove(removedProfileId)
+      .then(() => {
+        const remaining = profiles.filter((profile) => profile.id !== removedProfileId);
+        setProfiles(remaining);
+        if (recentProfileId === removedProfileId) setRecentProfileId("");
+        const next = remaining[0] || newConnectionProfile();
+        if (!remaining.length) next.gatewayUrl = hostGatewayUrl();
+        setSettingsProfileDraft(next);
+        setSettingsError("");
+        setConfirmation(null);
+      })
+      .catch((removeError) => {
+        setSettingsError(removeError instanceof Error ? removeError.message : "无法删除连接配置");
+      })
+      .finally(() => setConfirmationPending(false));
   };
 
   const closeTarget = (target: Target) => {
     if (target.ownerId !== clientId) {
-      setError("请先取得该分组控制权，再关闭标签页。");
+      setActionError("请先取得该分组控制权，再关闭标签页。");
       return;
     }
-    send({ type: "close", targetId: target.targetId });
+    if (target.targetId === activeTargetId) {
+      const index = visibleTargets.findIndex((item) => item.targetId === target.targetId);
+      pendingCloseFallbackRef.current = [
+        ...visibleTargets.slice(index + 1),
+        ...visibleTargets.slice(0, index).reverse(),
+      ].map((item) => item.targetId);
+    }
+    if (!send({ type: "close", targetId: target.targetId })) {
+      pendingCloseFallbackRef.current = null;
+      setActionError("网关连接已断开，无法关闭标签页。");
+    }
+  };
+
+  const runPageCommand = (command: "reload" | "back" | "forward") => {
+    if (!activeTargetId) return;
+    if (!isOwner) {
+      setActionError("请先取得当前分组控制权，再操作页面。");
+      return;
+    }
+    if (!send({ type: "command", targetId: activeTargetId, command })) {
+      setActionError("网关连接已断开，无法操作页面。");
+    }
   };
 
   const navigate = (event: FormEvent) => {
@@ -559,11 +1078,11 @@ export function RemoteBrowser({
 
   const copyFromRemote = () => {
     if (!activeTargetId || !isOwner) return;
-    send({
+    if (!send({
       type: "clipboard",
       action: "copy",
       targetId: activeTargetId,
-    });
+    })) setActionError("网关连接已断开，无法复制远端文本。");
   };
 
   const pasteToRemote = async () => {
@@ -572,7 +1091,8 @@ export function RemoteBrowser({
     try {
       text = await navigator.clipboard.readText();
     } catch {
-      text = window.prompt("粘贴要发送到远端页面的文本") || "";
+      setActionError("无法读取本机剪贴板，请检查客户端的剪贴板权限。");
+      return;
     }
     if (!text) return;
     send({
@@ -616,8 +1136,9 @@ export function RemoteBrowser({
   };
 
   const wheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
-    if (!activeTargetId || !isOwner) return;
     event.preventDefault();
+    event.stopPropagation();
+    if (!activeTargetId || !isOwner) return;
     wheelDeltaRef.current.x += event.deltaX;
     wheelDeltaRef.current.y += event.deltaY;
     const point = coordinateFor(event);
@@ -637,7 +1158,7 @@ export function RemoteBrowser({
   };
 
   const keyboard = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (!activeTargetId || !isOwner || event.key === "F5") return;
+    if (!activeTargetId || !isOwner) return;
     if (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229) return;
     event.preventDefault();
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
@@ -680,6 +1201,124 @@ export function RemoteBrowser({
     });
   };
 
+  useEffect(() => {
+    if (!clientId) return;
+
+    const shortcut = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const mod = event.ctrlKey || event.metaKey;
+      let action:
+        | "new"
+        | "close"
+        | "location"
+        | "reload"
+        | "back"
+        | "forward"
+        | "next-tab"
+        | "previous-tab"
+        | null = null;
+
+      if (mod && !event.altKey && key === "t") action = "new";
+      else if (mod && !event.altKey && key === "w") action = "close";
+      else if (mod && !event.altKey && key === "l") action = "location";
+      else if (mod && !event.altKey && key === "r") action = "reload";
+      else if (key === "f5") action = "reload";
+      else if (event.ctrlKey && key === "tab") {
+        action = event.shiftKey ? "previous-tab" : "next-tab";
+      } else if (event.metaKey && event.shiftKey && (key === "[" || key === "]")) {
+        action = key === "[" ? "previous-tab" : "next-tab";
+      } else if (event.metaKey && event.altKey && (key === "arrowleft" || key === "arrowright")) {
+        action = key === "arrowleft" ? "previous-tab" : "next-tab";
+      } else if (!event.metaKey && event.altKey && (key === "arrowleft" || key === "arrowright")) {
+        action = key === "arrowleft" ? "back" : "forward";
+      } else if (event.metaKey && !event.altKey && !event.ctrlKey && (key === "[" || key === "]")) {
+        action = key === "[" ? "back" : "forward";
+      }
+
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat || settingsDialogOpen || groupDialogOpen || confirmation || incomingClaims.length) return;
+
+      if (action === "location") {
+        addressInputRef.current?.focus();
+        addressInputRef.current?.select();
+        return;
+      }
+      if (action === "new") {
+        if (!chromeConnected || connection !== "online") {
+          setActionError("Chrome 尚未连接，暂时不能新建页面。");
+          return;
+        }
+        const message: Extract<ClientMessage, { type: "create" }> = {
+          type: "create",
+          groupId: selectedGroupId,
+          afterTargetId:
+            activeTarget?.groupId === selectedGroupId ? activeTarget.targetId : undefined,
+        };
+        if (defaultPageUrl) message.url = defaultPageUrl;
+        if (!send(message)) setActionError("网关连接已断开，无法新建页面。");
+        return;
+      }
+      if (action === "next-tab" || action === "previous-tab") {
+        if (!visibleTargets.length) return;
+        const currentIndex = visibleTargets.findIndex((target) => target.targetId === activeTargetId);
+        const direction = action === "next-tab" ? 1 : -1;
+        const nextIndex = currentIndex < 0
+          ? (direction > 0 ? 0 : visibleTargets.length - 1)
+          : (currentIndex + direction + visibleTargets.length) % visibleTargets.length;
+        const nextTarget = visibleTargets[nextIndex];
+        resetViewerState();
+        activeTargetRef.current = nextTarget.targetId;
+        setActiveTargetId(nextTarget.targetId);
+        setAddress(nextTarget.url);
+        send({ type: "view", targetId: nextTarget.targetId });
+        requestAnimationFrame(() => canvasRef.current?.focus());
+        return;
+      }
+      if (!activeTarget) return;
+      if (!isOwner) {
+        setActionError("请先取得当前分组控制权，再操作页面。");
+        return;
+      }
+      if (action === "close") {
+        const index = visibleTargets.findIndex((target) => target.targetId === activeTarget.targetId);
+        pendingCloseFallbackRef.current = [
+          ...visibleTargets.slice(index + 1),
+          ...visibleTargets.slice(0, index).reverse(),
+        ].map((target) => target.targetId);
+        if (!send({ type: "close", targetId: activeTarget.targetId })) {
+          pendingCloseFallbackRef.current = null;
+          setActionError("网关连接已断开，无法关闭标签页。");
+        }
+        return;
+      }
+      const command = action === "reload" ? "reload" : action;
+      if (!send({ type: "command", targetId: activeTarget.targetId, command })) {
+        setActionError("网关连接已断开，无法操作页面。");
+      }
+    };
+
+    window.addEventListener("keydown", shortcut, true);
+    return () => window.removeEventListener("keydown", shortcut, true);
+  }, [
+    activeTarget,
+    activeTargetId,
+    chromeConnected,
+    clientId,
+    confirmation,
+    connection,
+    defaultPageUrl,
+    groupDialogOpen,
+    incomingClaims.length,
+    isOwner,
+    resetViewerState,
+    selectedGroupId,
+    send,
+    settingsDialogOpen,
+    visibleTargets,
+  ]);
+
   const compositionStart = () => {
     composingRef.current = true;
   };
@@ -692,8 +1331,74 @@ export function RemoteBrowser({
     send({ type: "text", targetId: activeTargetId, text });
   };
 
-  if (!clientId && ["idle", "offline", "auth-failed", "connecting", "authenticating"].includes(connection)) {
+  const respondToClaim = (approved: boolean) => {
+    const request = incomingClaims[0];
+    if (!request) return;
+    setClaimResponsePending(true);
+    if (!send({ type: "claim:respond", requestId: request.requestId, approved })) {
+      setClaimResponsePending(false);
+      setActionError("网关连接已断开，无法处理控制权申请。");
+    }
+  };
+
+  const currentProfile = profiles.find((profile) => profile.id === profileId) || profiles[0];
+  const settingsBusy = settingsPending || (
+    settingsProfileDraft.id === profileId && ["connecting", "authenticating"].includes(connection)
+  );
+  const settingsOverlay = settingsDialogOpen && (
+    <SettingsDialog
+      profiles={profiles}
+      draft={settingsProfileDraft}
+      recentProfileId={recentProfileId}
+      connectedProfileId={connectedProfileId}
+      connection={connection}
+      defaultPageUrl={settingsDefaultPageDraft}
+      error={settingsError}
+      pending={settingsPending}
+      profilePending={settingsBusy}
+      onSelect={(profile) => {
+        setSettingsProfileDraft(profile);
+        setSettingsError("");
+      }}
+      onNew={() => {
+        setSettingsProfileDraft(newConnectionProfile());
+        setSettingsError("");
+      }}
+      onDraftChange={(value) => {
+        setSettingsProfileDraft(value);
+        setSettingsError("");
+      }}
+      onDefaultPageUrlChange={(value) => {
+        setSettingsDefaultPageDraft(value);
+        setSettingsError("");
+      }}
+      onResetDefaultPageUrl={() => {
+        setSettingsDefaultPageDraft("");
+        setSettingsError("");
+      }}
+      onDelete={removeProfile}
+      onClose={() => setSettingsDialogOpen(false)}
+      onSave={() => void persistSettingsDraft()}
+      onSaveAndConnect={() => void saveAndConnect()}
+      onSaveGeneral={persistGeneralSettings}
+      onClearError={() => setSettingsError("")}
+    />
+  );
+
+  const profileConfirmation = confirmation?.kind === "profile" && (
+    <ConfirmDialog
+      value={confirmation}
+      pending={confirmationPending}
+      onCancel={() => setConfirmation(null)}
+      onConfirm={confirmDelete}
+    />
+  );
+
+  if (!clientId) {
+    const restoring = ["connecting", "authenticating", "reconnecting"].includes(connection);
+    const noProfiles = profilesLoaded && profiles.length === 0;
     return (
+      <>
       <main className="connect-shell">
         <section className="connect-copy">
           <div className="brand-mark">RD</div>
@@ -728,102 +1433,49 @@ export function RemoteBrowser({
 
         <section className="connect-panel">
           <div className="panel-heading">
-            <span className="status-dot" />
+            <span className={`status-dot ${restoring ? "warning" : ""}`} />
             <div>
-              <p>连接到网关</p>
-              <span>填写运行 Chrome 的主机地址和访问令牌</span>
+              <p>{!profilesLoaded ? "正在读取客户端设置" : noProfiles ? "尚未添加网关" : restoring ? "正在恢复网关连接" : "网关连接已停止"}</p>
+              <span>{!profilesLoaded ? "请稍候…" : noProfiles ? "先在设置中添加运行 Chrome 的主机" : restoring ? "客户端会在网关恢复后自动进入控制台" : "你可以重新连接最近使用的网关"}</span>
             </div>
           </div>
-          <div className="profile-toolbar">
-            <select
-              value={profiles.some((profile) => profile.id === profileId) ? profileId : ""}
-              onChange={(event) => selectProfile(event.target.value)}
-              aria-label="选择网关配置"
-            >
-              {!profiles.some((profile) => profile.id === profileId) && (
-                <option value="">尚未保存</option>
-              )}
-              {profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.label}
-                </option>
-              ))}
-            </select>
-            <button type="button" onClick={createProfile} title="新建网关配置">
-              新建
-            </button>
-            <button
-              type="button"
-              onClick={removeProfile}
-              disabled={!profiles.some((profile) => profile.id === profileId)}
-              title="删除当前网关配置"
-            >
-              删除
-            </button>
+          {currentProfile && (
+            <div className="restore-profile">
+              <strong>{currentProfile.label}</strong>
+              <span>{compactUrl(currentProfile.gatewayUrl)}</span>
+            </div>
+          )}
+          {connectionError && <p className="form-error">{connectionError}</p>}
+          <div className="restore-actions">
+            {restoring ? (
+              <button className="primary-button" onClick={disconnect}>停止重连</button>
+            ) : currentProfile ? (
+              <button className="primary-button" onClick={() => connectProfile(currentProfile)}>重新连接</button>
+            ) : profilesLoaded ? (
+              <button className="primary-button" onClick={openSettings}>添加网关</button>
+            ) : null}
+            {profilesLoaded && <button className="secondary-button" onClick={openSettings}>打开设置</button>}
           </div>
-          <label>
-            连接名称
-            <input
-              value={profileLabel}
-              maxLength={40}
-              onChange={(event) => setProfileLabel(event.target.value)}
-              placeholder="家里主机"
-            />
-          </label>
-          <label>
-            设备名称
-            <input
-              value={clientName}
-              onChange={(event) => setClientName(event.target.value)}
-            />
-          </label>
-          <label>
-            网关地址
-            <input
-              value={gatewayUrl}
-              onChange={(event) => setGatewayUrl(event.target.value)}
-              placeholder="ws://192.168.1.20:8788"
-            />
-          </label>
-          <label>
-            访问令牌
-            <input
-              type="password"
-              value={token}
-              minLength={32}
-              maxLength={512}
-              onChange={(event) => setToken(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && connect()}
-            />
-          </label>
-          {error && <p className="form-error">{error}</p>}
-          <button
-            className="primary-button"
-            onClick={connect}
-            disabled={connection === "connecting" || connection === "authenticating"}
-          >
-            {connection === "connecting" || connection === "authenticating"
-              ? "正在连接…"
-              : connection === "offline" || connection === "auth-failed"
-                ? "重新连接"
-                : "进入控制台"}
-          </button>
           <p className="security-note">
             只连接你信任的网关地址。Chrome 调试端口不会暴露给客户端。
           </p>
         </section>
       </main>
+      {settingsOverlay}
+      {profileConfirmation}
+      </>
     );
   }
 
   return (
+    <>
     <main className="workspace-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="brand-mark small">RD</div>
           <div>
             <strong>Relaydeck</strong>
-            <span>shared browser</span>
+            <span>共享浏览器</span>
           </div>
         </div>
 
@@ -851,7 +1503,7 @@ export function RemoteBrowser({
 
         <div className="target-heading">
           <span>共享窗口</span>
-          <span>{visibleTargets.length} tabs</span>
+          <span>{visibleTargets.length} 个标签页</span>
         </div>
 
         <div className="group-toolbar">
@@ -893,7 +1545,7 @@ export function RemoteBrowser({
             onClick={createTarget}
             disabled={!chromeConnected}
             aria-label="在当前分组新建页面"
-            title="在当前分组新建页面"
+            title="新建标签页（Ctrl/Cmd+T）"
           >
             ＋
           </button>
@@ -904,7 +1556,9 @@ export function RemoteBrowser({
             className="group-dialog-backdrop"
             role="presentation"
             onMouseDown={(event) => {
-              if (event.target === event.currentTarget) setGroupDialogOpen(false);
+              if (!groupCreatePending && event.target === event.currentTarget) {
+                setGroupDialogOpen(false);
+              }
             }}
           >
             <form
@@ -923,16 +1577,26 @@ export function RemoteBrowser({
                 <input
                   autoFocus
                   value={newGroupName}
-                  maxLength={40}
-                  onChange={(event) => setNewGroupName(event.target.value)}
+                  maxLength={30}
+                  onChange={(event) => {
+                    setNewGroupName(event.target.value);
+                    setActionError("");
+                  }}
                   placeholder="例如：登录、资料、后台"
+                  disabled={groupCreatePending}
                 />
               </label>
               <div className="group-dialog-actions">
-                <button type="button" onClick={() => setGroupDialogOpen(false)}>
+                <button
+                  type="button"
+                  onClick={() => setGroupDialogOpen(false)}
+                  disabled={groupCreatePending}
+                >
                   取消
                 </button>
-                <button type="submit">创建分组</button>
+                <button type="submit" disabled={groupCreatePending}>
+                  {groupCreatePending ? "正在创建…" : "创建分组"}
+                </button>
               </div>
             </form>
           </div>
@@ -968,7 +1632,7 @@ export function RemoteBrowser({
                 aria-label={`关闭 ${target.title || "标签页"}`}
                 title={
                   target.ownerId === clientId
-                    ? "关闭标签页"
+                    ? "关闭标签页（Ctrl/Cmd+W）"
                     : "取得分组控制权后可关闭"
                 }
               >
@@ -983,9 +1647,33 @@ export function RemoteBrowser({
           )}
         </nav>
 
+        <section className="online-members" aria-label="在线成员">
+          <div className="target-heading">
+            <span>在线成员</span>
+            <span>{onlineClients.length} 人</span>
+          </div>
+          <div className="online-member-list">
+            {onlineClients.map((onlineClient) => {
+              const controlledGroups = groups.filter((group) => group.ownerId === onlineClient.clientId);
+              return (
+                <div className="online-member" key={onlineClient.clientId}>
+                  <span className="online-member-dot" />
+                  <div>
+                    <strong>{onlineClient.clientName}{onlineClient.clientId === clientId ? "（本机）" : ""}</strong>
+                    <span>{controlledGroups.length ? `正在控制：${controlledGroups.map((group) => group.name).join("、")}` : "在线"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
         <div className="sidebar-footer">
-          <button onClick={disconnect}>断开此设备</button>
-          <span>{clientId.slice(0, 8) || "connecting"}</span>
+          <div className="sidebar-footer-actions">
+            <button onClick={disconnect}>断开此设备</button>
+            <button onClick={openSettings}>设置</button>
+          </div>
+          <span>{clientId.slice(0, 8) || "连接中"}</span>
         </div>
       </aside>
 
@@ -993,38 +1681,23 @@ export function RemoteBrowser({
         <header className="browser-toolbar">
           <div className="nav-buttons">
             <button
-              onClick={() =>
-                send({
-                  type: "command",
-                  targetId: activeTargetId || "",
-                  command: "back",
-                })
-              }
+              onClick={() => runPageCommand("back")}
               disabled={!isOwner}
+              title="后退（Alt+← / Cmd+[）"
             >
               ←
             </button>
             <button
-              onClick={() =>
-                send({
-                  type: "command",
-                  targetId: activeTargetId || "",
-                  command: "forward",
-                })
-              }
+              onClick={() => runPageCommand("forward")}
               disabled={!isOwner}
+              title="前进（Alt+→ / Cmd+]）"
             >
               →
             </button>
             <button
-              onClick={() =>
-                send({
-                  type: "command",
-                  targetId: activeTargetId || "",
-                  command: "reload",
-                })
-              }
+              onClick={() => runPageCommand("reload")}
               disabled={!isOwner}
+              title="刷新（Ctrl/Cmd+R 或 F5）"
             >
               ↻
             </button>
@@ -1032,42 +1705,25 @@ export function RemoteBrowser({
           <form className="address-form" onSubmit={navigate}>
             <span className="secure-mark">◆</span>
             <input
+              ref={addressInputRef}
               value={address}
               onChange={(event) => setAddress(event.target.value)}
               disabled={!activeTarget}
               aria-label="页面地址"
             />
           </form>
-          <div className="clipboard-actions">
-            <button
-              onClick={copyFromRemote}
-              disabled={!isOwner}
-              title="把远端选中的文本复制到本机"
-            >
-              复制出来
-            </button>
-            <button
-              onClick={() => void pasteToRemote()}
-              disabled={!isOwner}
-              title="把本机剪贴板文本粘贴到远端焦点"
-            >
-              粘贴进去
-            </button>
-          </div>
           {activeTarget && (
             <button
               className={`claim-button ${isOwner ? "owned" : ""}`}
-              onClick={() =>
-                send({
-                  type: isOwner ? "release" : "claim",
-                  targetId: activeTarget.targetId,
-                })
-              }
+              onClick={() => send({ type: isOwner ? "release" : "claim", targetId: activeTarget.targetId })}
+              disabled={!isOwner && Boolean(pendingClaims[activeTarget.groupId])}
             >
               {isOwner
                 ? "释放分组"
+                : pendingClaims[activeTarget.groupId]
+                  ? `等待 ${pendingClaims[activeTarget.groupId].ownerName} 同意…`
                 : activeTarget.ownerId
-                  ? "接管分组"
+                  ? "申请控制"
                   : "控制此分组"}
             </button>
           )}
@@ -1130,22 +1786,51 @@ export function RemoteBrowser({
                 <span />
               </div>
               <p>选择一个共享窗口</p>
-              <span>或创建新的牛客页面开始操作</span>
-              <button onClick={createTarget} disabled={!chromeConnected}>
+              <span>或创建新的共享页面开始操作</span>
+              <button
+                onClick={createTarget}
+                disabled={!chromeConnected}
+                title="新建标签页（Ctrl/Cmd+T）"
+              >
                 新建页面
               </button>
             </div>
           )}
         </div>
 
-        {error && (
+        {(actionError || chromeError) && (
           <div className="toast">
             <span>!</span>
-            <p>{error}</p>
-            <button onClick={() => setError("")}>×</button>
+            <p>{actionError || chromeError}</p>
+            <button
+              onClick={() => {
+                setActionError("");
+                setChromeError("");
+              }}
+            >
+              ×
+            </button>
           </div>
         )}
       </section>
     </main>
+    {settingsOverlay}
+    {profileConfirmation}
+    {confirmation?.kind === "group" && (
+      <ConfirmDialog
+        value={confirmation}
+        pending={confirmationPending}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={confirmDelete}
+      />
+    )}
+    {incomingClaims[0] && (
+      <ClaimApprovalDialog
+        request={incomingClaims[0]}
+        pending={claimResponsePending}
+        onRespond={respondToClaim}
+      />
+    )}
+    </>
   );
 }

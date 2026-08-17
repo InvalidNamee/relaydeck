@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 export const FRAME_MAGIC = "RDF1";
 
 export type ClientCapability = "binaryFrames";
@@ -62,7 +62,9 @@ export type ClientMessage =
       groupId?: string;
       afterTargetId?: string;
     }
-  | { type: "claim" | "release" | "close"; targetId: string }
+  | { type: "claim"; targetId?: string; groupId?: string }
+  | { type: "release" | "close"; targetId: string }
+  | { type: "claim:respond"; requestId: string; approved: boolean }
   | { type: "group:create"; name: string }
   | { type: "group:delete"; groupId: string }
   | { type: "navigate"; targetId: string; url: string }
@@ -96,6 +98,20 @@ export type Group = {
   deletable: boolean;
 };
 
+export type OnlineClient = {
+  clientId: string;
+  clientName: string;
+};
+
+export type ClaimRequest = {
+  requestId: string;
+  groupId: string;
+  groupName: string;
+  requesterId: string;
+  requesterName: string;
+  expiresAt: number;
+};
+
 export type FrameMetadata = {
   deviceWidth?: number;
   deviceHeight?: number;
@@ -113,8 +129,11 @@ export type ServerMessage =
       clientName: string;
       capabilities: ClientCapability[];
     }
-  | { type: "state"; targets: Target[]; groups: Group[] }
+  | { type: "state"; targets: Target[]; groups: Group[]; clients: OnlineClient[] }
   | { type: "group:created"; groupId: string }
+  | { type: "claim:requested"; request: ClaimRequest }
+  | { type: "claim:pending"; requestId: string; groupId: string; ownerName: string; expiresAt: number }
+  | { type: "claim:resolved"; requestId: string; groupId: string; approved: boolean; message: string }
   | { type: "viewing"; targetId: string }
   | { type: "clipboard:text"; text: string }
   | {
@@ -166,6 +185,12 @@ function finiteNumber(
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${key} 必须是有限数字`);
   }
+  return value;
+}
+
+function booleanField(object: Record<string, unknown>, key: string): boolean {
+  const value = object[key];
+  if (typeof value !== "boolean") throw new Error(`${key} 必须是布尔值`);
   return value;
 }
 
@@ -233,10 +258,21 @@ export function parseClientMessage(value: unknown): ClientMessage {
         groupId: stringField(value, "groupId", { optional: true, max: 128 }),
         afterTargetId: stringField(value, "afterTargetId", { optional: true, max: 128 }),
       };
-    case "claim":
+    case "claim": {
+      const parsedTargetId = stringField(value, "targetId", { optional: true, max: 128 });
+      const groupId = stringField(value, "groupId", { optional: true, max: 128 });
+      if (!parsedTargetId && !groupId) throw new Error("claim 必须包含 targetId 或 groupId");
+      return { type, targetId: parsedTargetId, groupId };
+    }
     case "release":
     case "close":
       return { type, targetId: targetId(value) };
+    case "claim:respond":
+      return {
+        type,
+        requestId: stringField(value, "requestId", { max: 128 })!,
+        approved: booleanField(value, "approved"),
+      };
     case "group:create":
       return { type, name: stringField(value, "name", { max: 30 })! };
     case "group:delete":

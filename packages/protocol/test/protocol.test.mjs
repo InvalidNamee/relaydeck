@@ -43,6 +43,21 @@ test("rejects invalid commands and numeric values", () => {
   );
 });
 
+test("parses group claims and owner responses", () => {
+  assert.deepEqual(
+    parseClientMessage({ type: "claim", groupId: "group-1" }),
+    { type: "claim", groupId: "group-1", targetId: undefined },
+  );
+  assert.deepEqual(
+    parseClientMessage({ type: "claim:respond", requestId: "request-1", approved: true }),
+    { type: "claim:respond", requestId: "request-1", approved: true },
+  );
+  assert.throws(
+    () => parseClientMessage({ type: "claim:respond", requestId: "request-1", approved: "yes" }),
+    /布尔值/,
+  );
+});
+
 test("round trips binary jpeg frames", () => {
   const encoded = encodeBinaryFrame({
     targetId: "target-123",

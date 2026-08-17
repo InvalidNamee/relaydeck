@@ -107,7 +107,7 @@ test(
     socket.send(
       JSON.stringify({
         type: "hello",
-        protocol: 1,
+        protocol: 2,
         token: TOKEN,
         name: "real-chrome-test",
         capabilities: ["binaryFrames"],

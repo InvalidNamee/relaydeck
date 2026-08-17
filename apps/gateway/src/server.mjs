@@ -9,13 +9,14 @@ import {
 import { WebSocket, WebSocketServer } from "ws";
 import { CdpConnection, discoverChrome } from "./cdp.mjs";
 import { ChromeProcess } from "./chrome.mjs";
-import { loadConfig } from "./config.mjs";
+import { loadConfig, resolveTargetUrl } from "./config.mjs";
 import { StateStore } from "./state-store.mjs";
 
 const DEFAULT_GROUP_ID = "default";
 const GROUP_COLORS = ["#d9ff43", "#ff7047", "#67d4ff", "#c6a8ff", "#ffcf5a"];
 const AUTH_TIMEOUT_MS = 5_000;
 const HEARTBEAT_INTERVAL_MS = 25_000;
+const CLAIM_TIMEOUT_MS = 30_000;
 
 let config;
 try {
@@ -29,6 +30,8 @@ const stateStore = new StateStore(config.stateFile);
 const savedState = await stateStore.load();
 const savedGroups = savedState.groups.filter((group) => group.id !== DEFAULT_GROUP_ID);
 const clients = new Map();
+const claimRequests = new Map();
+const claimQueues = new Map();
 const targetSessions = new Map();
 const sessionTargets = new Map();
 const targetGroups = new Map(Object.entries(savedState.targetGroups));
@@ -71,6 +74,13 @@ function sendError(client, message, code = "request_failed", recoverable = true)
 
 function authenticatedClients() {
   return [...clients.values()].filter((client) => client.authenticated);
+}
+
+function onlineClients() {
+  return authenticatedClients().map((client) => ({
+    clientId: client.id,
+    clientName: client.name,
+  }));
 }
 
 function broadcast(payload) {
@@ -126,7 +136,7 @@ async function connectChrome() {
     chromeConnected = true;
     lastChromeError = "";
     broadcast({ type: "chrome", connected: true });
-    await broadcastTargets();
+    await broadcastWorkspaceState();
   } catch (error) {
     cdp = null;
     chromeConnected = false;
@@ -149,6 +159,7 @@ function onChromeClosed() {
     connected: false,
     message: "Chrome 连接已断开，正在重试。",
   });
+  void broadcastWorkspaceState();
   scheduleReconnect();
 }
 
@@ -263,16 +274,132 @@ function getGroups(targets = []) {
     });
 }
 
-async function broadcastTargets(targetSocket = null) {
-  if (!chromeConnected) return;
+async function broadcastWorkspaceState(targetSocket = null) {
+  let targets = [];
   try {
-    const targets = await getTargets();
-    const payload = { type: "state", targets, groups: getGroups(targets) };
-    if (targetSocket) send(targetSocket, payload);
-    else broadcast(payload);
+    if (chromeConnected) targets = await getTargets();
   } catch (error) {
     console.error("Failed to list targets:", error.message);
   }
+  const payload = { type: "state", targets, groups: getGroups(targets), clients: onlineClients() };
+  if (targetSocket) send(targetSocket, payload);
+  else broadcast(payload);
+}
+
+function claimQueue(groupId) {
+  const queue = claimQueues.get(groupId) || [];
+  claimQueues.set(groupId, queue);
+  return queue;
+}
+
+function removeClaimRequest(request) {
+  clearTimeout(request.timer);
+  claimRequests.delete(request.id);
+  const queue = claimQueues.get(request.groupId) || [];
+  const remaining = queue.filter((requestId) => requestId !== request.id);
+  if (remaining.length) claimQueues.set(request.groupId, remaining);
+  else claimQueues.delete(request.groupId);
+}
+
+function sendClaimResolution(request, approved, message) {
+  const payload = {
+    type: "claim:resolved",
+    requestId: request.id,
+    groupId: request.groupId,
+    approved,
+    message,
+  };
+  const requester = clients.get(request.requesterId);
+  if (requester?.authenticated) send(requester.socket, payload);
+  const ownerId = groups.get(request.groupId)?.ownerId;
+  const owner = ownerId ? clients.get(ownerId) : null;
+  if (owner?.authenticated && owner.id !== requester?.id) send(owner.socket, payload);
+}
+
+function notifyNextClaim(groupId) {
+  const group = groups.get(groupId);
+  if (!group) return;
+  const queue = claimQueue(groupId);
+  while (queue.length) {
+    const request = claimRequests.get(queue[0]);
+    const requester = request ? clients.get(request.requesterId) : null;
+    if (request && requester?.authenticated) break;
+    if (request) removeClaimRequest(request);
+    else queue.shift();
+  }
+  if (!queue.length) {
+    claimQueues.delete(groupId);
+    return;
+  }
+  const request = claimRequests.get(queue[0]);
+  if (!group.ownerId) {
+    group.ownerId = request.requesterId;
+    removeClaimRequest(request);
+    sendClaimResolution(request, true, `“${group.name}”已交给你控制。`);
+    notifyNextClaim(groupId);
+    void broadcastWorkspaceState();
+    return;
+  }
+  const owner = clients.get(group.ownerId);
+  if (!owner?.authenticated) {
+    group.ownerId = null;
+    notifyNextClaim(groupId);
+    return;
+  }
+  send(owner.socket, {
+    type: "claim:requested",
+    request: {
+      requestId: request.id,
+      groupId,
+      groupName: group.name,
+      requesterId: request.requesterId,
+      requesterName: clients.get(request.requesterId)?.name || "未知设备",
+      expiresAt: request.expiresAt,
+    },
+  });
+}
+
+function enqueueClaim(client, group) {
+  const duplicate = [...claimRequests.values()].find(
+    (request) => request.groupId === group.id && request.requesterId === client.id,
+  );
+  if (duplicate) {
+    const owner = clients.get(group.ownerId);
+    send(client.socket, {
+      type: "claim:pending",
+      requestId: duplicate.id,
+      groupId: group.id,
+      ownerName: owner?.name || "当前控制者",
+      expiresAt: duplicate.expiresAt,
+    });
+    return;
+  }
+  const request = {
+    id: randomUUID(),
+    groupId: group.id,
+    requesterId: client.id,
+    expiresAt: Date.now() + CLAIM_TIMEOUT_MS,
+    timer: null,
+  };
+  request.timer = setTimeout(() => {
+    if (!claimRequests.has(request.id)) return;
+    const wasFirst = claimQueues.get(group.id)?.[0] === request.id;
+    removeClaimRequest(request);
+    sendClaimResolution(request, false, "控制权申请已超时。");
+    if (wasFirst) notifyNextClaim(group.id);
+  }, CLAIM_TIMEOUT_MS);
+  claimRequests.set(request.id, request);
+  const queue = claimQueue(group.id);
+  queue.push(request.id);
+  const owner = clients.get(group.ownerId);
+  send(client.socket, {
+    type: "claim:pending",
+    requestId: request.id,
+    groupId: group.id,
+    ownerName: owner?.name || "当前控制者",
+    expiresAt: request.expiresAt,
+  });
+  if (queue.length === 1) notifyNextClaim(group.id);
 }
 
 async function ensureTargetSession(targetId) {
@@ -360,7 +487,7 @@ async function viewTarget(client, targetId) {
   session.viewers.add(client.id);
   client.targetId = targetId;
   send(client.socket, { type: "viewing", targetId });
-  await broadcastTargets();
+  await broadcastWorkspaceState();
 }
 
 async function handleCdpEvent(message) {
@@ -413,7 +540,7 @@ async function handleCdpEvent(message) {
       placeTarget(target.targetId, { openerId: target.openerId || null });
     }
   }
-  await broadcastTargets();
+  await broadcastWorkspaceState();
   if (message.method === "Target.targetCreated") {
     const target = message.params.targetInfo;
     const groupId = targetGroups.get(target?.targetId);
@@ -466,7 +593,7 @@ async function setTargetViewport(targetId, viewport) {
 async function handleClientMessage(client, message) {
   switch (message.type) {
     case "list":
-      await broadcastTargets(client.socket);
+      await broadcastWorkspaceState(client.socket);
       break;
     case "view":
       await viewTarget(client, message.targetId);
@@ -510,10 +637,9 @@ async function handleClientMessage(client, message) {
       const requestedGroupId = message.groupId || DEFAULT_GROUP_ID;
       const groupId = groups.has(requestedGroupId) ? requestedGroupId : DEFAULT_GROUP_ID;
       const requestedUrl = message.url || config.defaultUrl;
-      const url = new URL(requestedUrl);
-      if (!["http:", "https:"].includes(url.protocol)) throw new Error("只允许打开 HTTP 或 HTTPS 地址");
+      const url = resolveTargetUrl(requestedUrl);
       const { targetId } = await cdp.command("Target.createTarget", {
-        url: url.href,
+        url,
         background: true,
       });
       targetGroups.set(targetId, groupId);
@@ -524,20 +650,58 @@ async function handleClientMessage(client, message) {
       if (!groups.get(groupId).ownerId) groups.get(groupId).ownerId = client.id;
       persistWorkspace();
       await viewTarget(client, targetId);
-      await broadcastTargets();
+      await broadcastWorkspaceState();
       break;
     }
     case "claim": {
-      const groupId = targetGroups.get(message.targetId) || DEFAULT_GROUP_ID;
-      groups.get(groupId).ownerId = client.id;
-      await broadcastTargets();
+      const groupId = message.groupId || targetGroups.get(message.targetId) || DEFAULT_GROUP_ID;
+      const group = groups.get(groupId);
+      if (!group) throw new Error("分组不存在");
+      if (!group.ownerId || group.ownerId === client.id) {
+        group.ownerId = client.id;
+        await broadcastWorkspaceState();
+      } else {
+        enqueueClaim(client, group);
+      }
+      break;
+    }
+    case "claim:respond": {
+      const request = claimRequests.get(message.requestId);
+      if (!request) throw new Error("控制权申请已失效");
+      const group = groups.get(request.groupId);
+      if (!group || group.ownerId !== client.id) throw new Error("只有当前控制者可以处理申请");
+      if (claimQueues.get(group.id)?.[0] !== request.id) throw new Error("请先处理更早的控制权申请");
+      const requester = clients.get(request.requesterId);
+      removeClaimRequest(request);
+      if (message.approved && requester?.authenticated) {
+        send(client.socket, {
+          type: "claim:resolved",
+          requestId: request.id,
+          groupId: request.groupId,
+          approved: true,
+          message: `已将“${group.name}”移交给 ${requester.name}。`,
+        });
+        group.ownerId = requester.id;
+        sendClaimResolution(request, true, `${client.name} 已同意你的控制权申请。`);
+      } else {
+        sendClaimResolution(
+          request,
+          false,
+          message.approved ? "申请设备已经离线。" : `${client.name} 拒绝了你的控制权申请。`,
+        );
+      }
+      notifyNextClaim(group.id);
+      await broadcastWorkspaceState();
       break;
     }
     case "release": {
       const groupId = targetGroups.get(message.targetId) || DEFAULT_GROUP_ID;
       const group = groups.get(groupId);
-      if (group?.ownerId === client.id) group.ownerId = null;
-      await broadcastTargets();
+      if (group?.ownerId === client.id) {
+        group.ownerId = null;
+        notifyNextClaim(groupId);
+      }
+      await broadcastWorkspaceState();
       break;
     }
     case "close":
@@ -558,7 +722,7 @@ async function handleClientMessage(client, message) {
       });
       persistWorkspace();
       send(client.socket, { type: "group:created", groupId: id });
-      await broadcastTargets();
+      await broadcastWorkspaceState();
       break;
     }
     case "group:delete": {
@@ -573,9 +737,15 @@ async function handleClientMessage(client, message) {
       for (const [targetId, groupId] of targetGroups.entries()) {
         if (groupId === message.groupId) targetGroups.set(targetId, DEFAULT_GROUP_ID);
       }
+      for (const requestId of [...(claimQueues.get(message.groupId) || [])]) {
+        const request = claimRequests.get(requestId);
+        if (!request) continue;
+        removeClaimRequest(request);
+        sendClaimResolution(request, false, "分组已被删除。");
+      }
       groups.delete(message.groupId);
       persistWorkspace();
-      await broadcastTargets();
+      await broadcastWorkspaceState();
       break;
     }
     case "navigate": {
@@ -658,10 +828,21 @@ function disconnectClient(client) {
   if (client.targetId && targetSessions.has(client.targetId)) {
     targetSessions.get(client.targetId).viewers.delete(client.id);
   }
-  for (const group of groups.values()) {
-    if (group.ownerId === client.id) group.ownerId = null;
+  const affectedQueues = new Set();
+  for (const request of [...claimRequests.values()]) {
+    if (request.requesterId !== client.id) continue;
+    affectedQueues.add(request.groupId);
+    sendClaimResolution(request, false, `${client.name} 已离线，控制权申请已取消。`);
+    removeClaimRequest(request);
   }
-  void broadcastTargets();
+  for (const group of groups.values()) {
+    if (group.ownerId === client.id) {
+      group.ownerId = null;
+      affectedQueues.add(group.id);
+    }
+  }
+  for (const groupId of affectedQueues) notifyNextClaim(groupId);
+  void broadcastWorkspaceState();
 }
 
 function originAllowed(request) {
@@ -756,8 +937,7 @@ server.on("upgrade", (request, socket, head) => {
             connected: chromeConnected,
             message: chromeConnected ? undefined : lastChromeError || "正在等待 Chrome。",
           });
-          if (chromeConnected) await broadcastTargets(websocket);
-          await broadcastTargets();
+          await broadcastWorkspaceState();
           return;
         }
         if (message.type === "hello") throw new Error("连接已经完成认证");
@@ -805,6 +985,7 @@ async function shutdown() {
   shuttingDown = true;
   clearInterval(heartbeat);
   if (reconnectTimer) clearTimeout(reconnectTimer);
+  for (const request of claimRequests.values()) clearTimeout(request.timer);
   for (const client of clients.values()) client.socket.close(1001, "server shutdown");
   wss.close();
   cdp?.close();

@@ -117,7 +117,7 @@ export class RelayConnection {
     this.clearReconnect();
     this.socket?.close(1000, "client disconnect");
     this.socket = null;
-    this.update({ status: "offline", attempt: this.attempt, error: "" });
+    this.update({ status: "idle", attempt: this.attempt, error: "" });
   }
 
   send(message: Exclude<ClientMessage, { type: "hello" }>): boolean {

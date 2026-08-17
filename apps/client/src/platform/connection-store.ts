@@ -6,6 +6,14 @@ const PROFILES_KEY = "relaydeck.profiles.v1";
 const ACTIVE_PROFILE_KEY = "relaydeck.activeProfile.v1";
 type StoredProfile = Omit<SavedConnection, "token">;
 
+function clearLegacyProfileStorage() {
+  localStorage.removeItem("relaydeck.gateway");
+  localStorage.removeItem("relaydeck.name");
+  sessionStorage.removeItem("relaydeck.gateway");
+  sessionStorage.removeItem("relaydeck.name");
+  sessionStorage.removeItem("relaydeck.token");
+}
+
 function loadProfiles(): StoredProfile[] {
   try {
     const value = JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]") as unknown;
@@ -65,7 +73,7 @@ export const connectionStore: ConnectionStore = {
       clientName: value.clientName,
     });
     saveProfiles(profiles);
-    localStorage.setItem(ACTIVE_PROFILE_KEY, value.id);
+    clearLegacyProfileStorage();
     if (!IS_TAURI) {
       sessionStorage.setItem(`relaydeck.token.${value.id}`, value.token);
       return;
@@ -73,9 +81,14 @@ export const connectionStore: ConnectionStore = {
     await invoke("set_gateway_secret", { profile: value.id, secret: value.token });
   },
 
+  async activate(id) {
+    localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+  },
+
   async remove(id) {
     saveProfiles(loadProfiles().filter((profile) => profile.id !== id));
     sessionStorage.removeItem(`relaydeck.token.${id}`);
+    clearLegacyProfileStorage();
     if (localStorage.getItem(ACTIVE_PROFILE_KEY) === id) {
       localStorage.removeItem(ACTIVE_PROFILE_KEY);
     }

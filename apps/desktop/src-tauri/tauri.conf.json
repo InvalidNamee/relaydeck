@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.relaydeck.client",
   "build": {
-    "beforeDevCommand": "npm --prefix ../.. run dev -w @relaydeck/client",
+    "beforeDevCommand": "npm --prefix ../.. run build:packages && npm --prefix ../.. run dev -w @relaydeck/client",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm --prefix ../.. run build -w @relaydeck/client",
+    "beforeBuildCommand": "npm --prefix ../.. run build:packages && npm --prefix ../.. run build -w @relaydeck/client",
     "frontendDist": "../../client/dist"
   },
   "app": {

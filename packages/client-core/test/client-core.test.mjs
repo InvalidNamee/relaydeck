@@ -50,7 +50,7 @@ test("authenticates before sending control messages", () => {
   socket.message(
     JSON.stringify({
       type: "ready",
-      protocol: 1,
+      protocol: 2,
       clientId: "client",
       clientName: "Mac",
       capabilities: ["binaryFrames"],
@@ -103,7 +103,7 @@ test("reconnects after a transient gateway disconnect", () => {
   firstSocket.message(
     JSON.stringify({
       type: "ready",
-      protocol: 1,
+      protocol: 2,
       clientId: "first",
       clientName: "Mac",
       capabilities: ["binaryFrames"],
@@ -116,6 +116,19 @@ test("reconnects after a transient gateway disconnect", () => {
   assert.equal(connection.state.status, "reconnecting");
   secondSocket.open();
   assert.equal(connection.state.status, "authenticating");
+});
+
+test("returns to idle after an intentional disconnect", () => {
+  const socket = new FakeSocket();
+  const connection = new RelayConnection(
+    { url: "ws://127.0.0.1:8788", token: "secret", name: "Mac" },
+    () => socket,
+  );
+  connection.connect();
+  socket.open();
+  connection.disconnect();
+  assert.equal(connection.state.status, "idle");
+  assert.equal(connection.state.error, "");
 });
 
 test("decodes binary frames from the gateway", () => {

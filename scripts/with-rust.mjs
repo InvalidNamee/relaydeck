@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -36,11 +37,14 @@ const env = {
   PATH: pathEntries.filter(Boolean).join(delimiter),
 };
 
-const executable =
-  process.platform === "win32" && ["tauri", "npm", "npx"].includes(command)
-    ? `${command}.cmd`
-    : command;
-const child = spawn(executable, args, { env, stdio: "inherit" });
+const require = createRequire(import.meta.url);
+const invocation = command === "tauri"
+  ? {
+      executable: process.execPath,
+      args: [require.resolve("@tauri-apps/cli/tauri.js"), ...args],
+    }
+  : { executable: command, args };
+const child = spawn(invocation.executable, invocation.args, { env, stdio: "inherit" });
 
 child.on("error", (error) => {
   console.error(`无法启动 ${command}：${error.message}`);

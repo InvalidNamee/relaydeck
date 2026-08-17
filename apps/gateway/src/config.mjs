@@ -25,6 +25,18 @@ export function resolveChromeHeadless({
   return configured || (platform === "linux" && !hasDisplay);
 }
 
+export function resolveDefaultUrl(value = process.env.DEFAULT_URL) {
+  return value || "about:blank";
+}
+
+export function resolveTargetUrl(value) {
+  const url = new URL(value);
+  if (url.href !== "about:blank" && !["http:", "https:"].includes(url.protocol)) {
+    throw new Error("只允许打开空白页或 HTTP/HTTPS 地址");
+  }
+  return url.href;
+}
+
 export function loadConfig() {
   const token = process.env.GATEWAY_TOKEN || "";
   if (token.length < 32) {
@@ -38,7 +50,7 @@ export function loadConfig() {
     token,
     cdpHttpUrl: (process.env.CDP_HTTP_URL || "http://127.0.0.1:9222").replace(/\/$/, ""),
     cdpPort: integer("CDP_PORT", 9222, { minimum: 1 }),
-    defaultUrl: process.env.DEFAULT_URL || "https://ac.nowcoder.com/",
+    defaultUrl: resolveDefaultUrl(),
     dataDirectory,
     stateFile: resolve(dataDirectory, "workspace-state.json"),
     chromeProfileDirectory: resolve(
