@@ -299,8 +299,8 @@ function SettingsDialog({
         <div className="settings-layout">
           <aside className="settings-profiles">
             <nav className="settings-navigation" aria-label="设置分类">
-              <button type="button" className={section === "gateways" ? "active" : ""} onClick={() => { setSection("gateways"); onClearError(); }}>网关配置</button>
               <button type="button" className={section === "general" ? "active" : ""} onClick={() => { setSection("general"); onClearError(); }}>通用设置</button>
+              <button type="button" className={section === "gateways" ? "active" : ""} onClick={() => { setSection("gateways"); onClearError(); }}>网关配置</button>
             </nav>
             {section === "gateways" && <>
               <div className="settings-section-title">

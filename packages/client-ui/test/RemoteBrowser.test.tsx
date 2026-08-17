@@ -212,6 +212,15 @@ describe("startup restoration", () => {
 });
 
 describe("gateway settings", () => {
+  test("places general settings before gateway settings", async () => {
+    render(<RemoteBrowser connectionStore={storeWith([])} />);
+    await screen.findByRole("dialog", { name: "客户端设置" });
+    const navigation = screen.getByRole("navigation", { name: "设置分类" });
+    expect(
+      [...navigation.querySelectorAll("button")].map((button) => button.textContent),
+    ).toEqual(["通用设置", "网关配置"]);
+  });
+
   test("rejects a device name longer than the protocol limit", async () => {
     const store = storeWith([]);
     render(<RemoteBrowser connectionStore={store} />);

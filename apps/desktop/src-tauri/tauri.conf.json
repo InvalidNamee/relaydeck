@@ -30,6 +30,13 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": [
+      "icons/relaydeck-v2/32x32.png",
+      "icons/relaydeck-v2/128x128.png",
+      "icons/relaydeck-v2/128x128@2x.png",
+      "icons/relaydeck-v2/icon.icns",
+      "icons/relaydeck-v2/icon.ico"
+    ],
     "category": "Utility",
     "shortDescription": "局域网共享浏览器控制客户端",
     "longDescription": "通过局域网连接 Relaydeck 网关，安全控制服务器上的共享 Chrome 会话。",
