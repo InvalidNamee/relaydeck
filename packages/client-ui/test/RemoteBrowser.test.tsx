@@ -354,6 +354,20 @@ describe("browser shortcuts", () => {
     expect(screen.getByRole("textbox", { name: "页面地址" })).toHaveFocus();
   });
 
+  test("prevents viewers from creating tabs in an occupied group", async () => {
+    const socket = await online(storeWith());
+    await showTargets(socket, [target("one", "client-2")]);
+    socket.sent = [];
+
+    expect(screen.getByRole("button", { name: "在当前分组新建页面" })).toBeDisabled();
+    fireEvent.keyDown(window, { key: "t", ctrlKey: true });
+
+    expect(socket.sent.map((value) => JSON.parse(value))).not.toContainEqual(
+      expect.objectContaining({ type: "create" }),
+    );
+    expect(screen.getByText("请先取得当前分组控制权，再新建页面。")).toBeInTheDocument();
+  });
+
   test("cycles tabs with Windows and macOS shortcut families", async () => {
     const socket = await online(storeWith());
     await showTargets(socket, [target("one"), target("two"), target("three")], "one");

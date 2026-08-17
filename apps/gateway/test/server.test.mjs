@@ -200,6 +200,9 @@ test("lists online clients and requires owner approval before transferring a gro
     requester.state.clients.map((client) => client.clientName).sort(),
     ["owner-device", "requester-device"],
   );
+  requester.socket.send(JSON.stringify({ type: "create", groupId: created.groupId }));
+  const createRejected = await nextOfType(requester.messages, "error");
+  assert.match(createRejected.message, /只读|控制权/);
   requester.socket.send(JSON.stringify({ type: "claim", groupId: created.groupId }));
 
   const pending = await nextOfType(requester.messages, "claim:pending");

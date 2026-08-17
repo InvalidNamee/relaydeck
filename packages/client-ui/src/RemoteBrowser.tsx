@@ -525,6 +525,9 @@ export function RemoteBrowser({
     [selectedGroupId, targets],
   );
   const isOwner = activeTarget?.ownerId === clientId;
+  const canCreateTarget = Boolean(
+    activeGroup && (!activeGroup.ownerId || activeGroup.ownerId === clientId),
+  );
 
   useEffect(() => {
     activeTargetRef.current = activeTargetId;
@@ -942,6 +945,10 @@ export function RemoteBrowser({
   };
 
   const createTarget = () => {
+    if (!canCreateTarget) {
+      setActionError("请先取得当前分组控制权，再新建页面。");
+      return;
+    }
     if (!chromeConnected || connection !== "online") {
       setActionError("Chrome 尚未连接，暂时不能新建页面。");
       return;
@@ -1246,6 +1253,10 @@ export function RemoteBrowser({
         return;
       }
       if (action === "new") {
+        if (!canCreateTarget) {
+          setActionError("请先取得当前分组控制权，再新建页面。");
+          return;
+        }
         if (!chromeConnected || connection !== "online") {
           setActionError("Chrome 尚未连接，暂时不能新建页面。");
           return;
@@ -1304,6 +1315,7 @@ export function RemoteBrowser({
   }, [
     activeTarget,
     activeTargetId,
+    canCreateTarget,
     chromeConnected,
     clientId,
     confirmation,
@@ -1543,9 +1555,9 @@ export function RemoteBrowser({
           <button
             type="button"
             onClick={createTarget}
-            disabled={!chromeConnected}
+            disabled={!chromeConnected || !canCreateTarget}
             aria-label="在当前分组新建页面"
-            title="新建标签页（Ctrl/Cmd+T）"
+            title={canCreateTarget ? "新建标签页（Ctrl/Cmd+T）" : "取得分组控制权后才能新建标签页"}
           >
             ＋
           </button>
@@ -1789,8 +1801,8 @@ export function RemoteBrowser({
               <span>或创建新的共享页面开始操作</span>
               <button
                 onClick={createTarget}
-                disabled={!chromeConnected}
-                title="新建标签页（Ctrl/Cmd+T）"
+                disabled={!chromeConnected || !canCreateTarget}
+                title={canCreateTarget ? "新建标签页（Ctrl/Cmd+T）" : "取得分组控制权后才能新建标签页"}
               >
                 新建页面
               </button>

@@ -633,21 +633,32 @@ async function handleClientMessage(client, message) {
       break;
     }
     case "create": {
-      if (!cdp) throw new Error("Chrome 未连接");
       const requestedGroupId = message.groupId || DEFAULT_GROUP_ID;
       const groupId = groups.has(requestedGroupId) ? requestedGroupId : DEFAULT_GROUP_ID;
+      const group = groups.get(groupId);
+      if (group.ownerId && group.ownerId !== client.id) {
+        throw new Error("此分组当前为只读，请先取得分组控制权");
+      }
+      if (!cdp) throw new Error("Chrome 未连接");
+      const claimedUnownedGroup = !group.ownerId;
+      if (claimedUnownedGroup) group.ownerId = client.id;
       const requestedUrl = message.url || config.defaultUrl;
       const url = resolveTargetUrl(requestedUrl);
-      const { targetId } = await cdp.command("Target.createTarget", {
-        url,
-        background: true,
-      });
+      let targetId;
+      try {
+        ({ targetId } = await cdp.command("Target.createTarget", {
+          url,
+          background: true,
+        }));
+      } catch (error) {
+        if (claimedUnownedGroup && group.ownerId === client.id) group.ownerId = null;
+        throw error;
+      }
       targetGroups.set(targetId, groupId);
       const afterTargetId = message.afterTargetId || "";
       placeTarget(targetId, {
         afterTargetId: targetGroups.get(afterTargetId) === groupId ? afterTargetId : null,
       });
-      if (!groups.get(groupId).ownerId) groups.get(groupId).ownerId = client.id;
       persistWorkspace();
       await viewTarget(client, targetId);
       await broadcastWorkspaceState();
