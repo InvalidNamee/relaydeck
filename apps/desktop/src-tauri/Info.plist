@@ -6,6 +6,8 @@
   <string>Relaydeck 需要连接您局域网中的浏览器网关。</string>
   <key>NSAppTransportSecurity</key>
   <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
